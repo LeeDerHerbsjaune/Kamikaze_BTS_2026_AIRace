@@ -1,3 +1,30 @@
-# Gaussian.Yaml
+model:
+  sh_degree: 3
+  opacity_init: 0.1
+  scale_init_factor: 1.0
+  percent_dense: 0.01
 
-**Tài liệu cho gaussian.yaml**
+densify:
+  densify_from_iter: 500
+  densify_until_iter: 15000
+  densification_interval: 100
+
+  densify_grad_threshold: 0.0002
+
+  clone_factor: 2
+  split_factor: 2
+
+  prune_interval: 100
+  prune_after_iter: 1000
+
+  opacity_reset_interval: 3000
+
+  min_opacity: 0.005
+
+  max_screen_size: 20
+  max_world_size_ratio: 0.1
+  min_world_size_ratio: 1.0e-5
+
+  min_visible_count: 5
+
+  max_gaussians: 3000000

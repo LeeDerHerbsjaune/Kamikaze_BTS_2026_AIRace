@@ -1,3 +1,10 @@
-# Default.Yaml
+# config/default.yaml
+app:
+  name: "My Machine Learning Project"
+  version: "1.0.0"
 
-**Tài liệu cho default.yaml**
+docs_pipeline:
+  target_dir: "docs"
+  format: "markdown"
+
+# Bạn có thể định nghĩa thêm các thông số khác ở đây
