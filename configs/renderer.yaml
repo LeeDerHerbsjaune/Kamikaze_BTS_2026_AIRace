@@ -1,8 +1,22 @@
 # ==========================================================
-# Config Renderer
+# Gaussian Renderer Configuration
 # ==========================================================
 
 renderer:
-  backend: "gsplat"                  # "gsplat" | "diff_gaussian_rasterization"
-  bg_color: [0, 0, 0]
-  compute_cov3D_python: false
+
+  backend: "gsplat"
+
+  background:
+    color: [0, 0, 0]
+
+  covariance:
+    compute_in_python: false
+
+  rasterization:
+    tile_size: 16
+    antialiasing: false
+
+  debug:
+    enable: false
+    save_depth: false
+    save_alpha: false

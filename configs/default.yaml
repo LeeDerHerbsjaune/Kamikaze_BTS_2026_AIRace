@@ -1,10 +1,19 @@
-# config/default.yaml
-app:
-  name: "My Machine Learning Project"
-  version: "1.0.0"
+# ==========================================================
+# Config gốc - Telecom Digital Twin (BTS 3D Reconstruction)
+# Gộp tất cả config con trong cùng thư mục configs/.
+# Sửa từng phần thì sửa trực tiếp trong file con tương ứng,
+# không cần đụng vào file này.
+# ==========================================================
 
-docs_pipeline:
-  target_dir: "docs"
-  format: "markdown"
+experiment_name: "bts_scene_01"
+seed: 42
+device: "cuda"
 
-# Bạn có thể định nghĩa thêm các thông số khác ở đây
+# Thứ tự include quan trọng nếu có key trùng nhau (file sau đè file trước).
+include:
+  - dataset.yaml      # dataset + preprocessing
+  - gaussian.yaml      # model + densify
+  - renderer.yaml      # renderer
+  - loss.yaml           # loss
+  - train.yaml           # optimizer + train
+  - inference.yaml        # inference

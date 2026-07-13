@@ -1,9 +1,0 @@
-# ==========================================================
-# Config Inference / Render novel views
-# ==========================================================
-
-inference:
-  checkpoint: "./outputs/bts_scene_01/checkpoints/last.pth"
-  output_dir: "./outputs/bts_scene_01/novel_views"
-  render_video: true
-  fps: 24
