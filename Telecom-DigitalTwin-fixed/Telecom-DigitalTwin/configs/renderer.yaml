@@ -1,0 +1,22 @@
+# ==========================================================
+# Gaussian Renderer Configuration
+# ==========================================================
+
+renderer:
+
+  backend: "gsplat"
+
+  background:
+    color: [0, 0, 0]
+
+  covariance:
+    compute_in_python: false
+
+  rasterization:
+    tile_size: 16
+    antialiasing: false
+
+  debug:
+    enable: false
+    save_depth: false
+    save_alpha: false

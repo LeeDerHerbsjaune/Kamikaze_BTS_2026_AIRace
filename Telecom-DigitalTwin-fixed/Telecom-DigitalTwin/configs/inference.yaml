@@ -1,0 +1,19 @@
+# ==========================================================
+# Inference Configuration
+# ==========================================================
+
+inference:
+
+  checkpoint: "./outputs/bts_scene_01/checkpoints/last.pth"
+
+  output:
+    directory: "./outputs/bts_scene_01/novel_views"
+
+  render:
+
+    images: true
+
+    video:
+      enabled: true
+      fps: 24
+      codec: "mp4"

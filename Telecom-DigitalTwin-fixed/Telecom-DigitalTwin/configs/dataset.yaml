@@ -1,0 +1,32 @@
+# ==========================================================
+# Config Dataset - ảnh drone + camera pose + target novel views
+# ==========================================================
+
+dataset:
+  root: "./data/bts_scene_01"
+  type: "colmap"                  # colmap | nerf_transforms
+  images:
+    directory: "images"
+    resolution: -1
+    white_background: false
+  cameras:
+    source: "colmap"
+  pointcloud:
+    source: "sparse"
+  target_views:
+    file: "target_poses.json"
+  split:
+    mode: "ratio"                 # ratio | llff
+    ratio: 0.1
+
+preprocessing:
+  normalize_scene: true
+  initialize_pointcloud:
+    method: "sparse"              # sparse | random
+    random_points: 100000
+  colmap:
+    enabled: false
+    executable: "colmap"
+    camera_model: "PINHOLE"
+  cache:
+    images: true
