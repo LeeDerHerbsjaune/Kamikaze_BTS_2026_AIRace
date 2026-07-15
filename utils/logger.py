@@ -6,7 +6,7 @@ import datetime
 class Logger:
     def __init__(self, log_dir, use_tensorboard=True):
         os.makedirs(log_dir, exist_ok=True)
-        self.log_file = open(os.path.join(log_dir, "train.log"), "a")
+        self.log_file = open(os.path.join(log_dir, "train.log"), "a", encoding="utf-8")
         self.tb = None
         if use_tensorboard:
             try:
@@ -32,3 +32,8 @@ class Logger:
         for k, v in d.items():
             self.log_scalar(f"{prefix}/{k}", v, step)
         self.log_text(f"[{prefix} @ iter {step}] " + ", ".join(f"{k}={v:.4f}" for k, v in d.items()))
+
+    def close(self):
+        if self.tb:
+            self.tb.close()
+        self.log_file.close()

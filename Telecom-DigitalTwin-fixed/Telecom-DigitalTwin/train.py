@@ -32,7 +32,8 @@ def main():
 
     # ---------- Load Config ----------
     cfg = load_config(args.config)
-    exp_dir = os.path.join("outputs", cfg["experiment_name"])
+    output_root = cfg.get("output_root", "outputs")
+    exp_dir = os.path.join(output_root, cfg["experiment_name"])
     os.makedirs(exp_dir, exist_ok=True)
 
     # Override thư mục output theo experiment_name (đè lên giá trị tĩnh trong

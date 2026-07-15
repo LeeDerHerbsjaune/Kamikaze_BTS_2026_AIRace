@@ -11,9 +11,9 @@ device: "cuda"
 
 # Thứ tự include quan trọng nếu có key trùng nhau (file sau đè file trước).
 include:
-  - dataset.yaml      # dataset + preprocessing
-  - gaussian.yaml      # model + densify
-  - renderer.yaml      # renderer
-  - loss.yaml           # loss
-  - train.yaml           # optimizer + train
-  - inference.yaml        # inference
+  - dataset.yaml       # dataset + preprocessing
+  - gaussian.yaml       # model
+  - renderer.yaml        # renderer
+  - loss.yaml              # loss + evaluation
+  - train.yaml              # optimizer + training + densify/pruning
+  - inference.yaml          # inference

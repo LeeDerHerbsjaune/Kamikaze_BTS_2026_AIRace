@@ -1,0 +1,55 @@
+# ==========================================================
+# Config Dataset - phiên bản dùng cho Kaggle Notebook
+# ==========================================================
+#
+# Trên Kaggle, dataset được mount READ-ONLY tại /kaggle/input/<tên-dataset>/...
+# và thư mục duy nhất được ghi là /kaggle/working/.
+#
+# CÁCH LẤY ĐÚNG ĐƯỜNG DẪN "root" BÊN DƯỚI:
+#   1) Trong 1 cell của notebook, chạy:
+#        import os
+#        for root, dirs, files in os.walk("/kaggle/input"):
+#            print(root)
+#      rồi tìm thư mục chứa "images/" và "sparse/" cùng cấp.
+#   2) HOẶC đơn giản hơn: mở panel "Data" bên phải notebook, bấm vào dataset
+#      -> Kaggle hiển thị sẵn đường dẫn đầy đủ, copy dán vào `root` bên dưới.
+#
+# Ví dụ nếu bạn add dataset tên "vai-nvs-data-hcm0031" và cấu trúc gốc là
+# .../hcm0031/train/{images,sparse}, đường dẫn thường sẽ là:
+#   /kaggle/input/vai-nvs-data-hcm0031/train
+# (Kaggle giữ nguyên cấu trúc thư mục con bên trong dataset gốc bạn upload,
+# chỉ thêm tiền tố /kaggle/input/<slug>/ ở đầu.)
+
+dataset:
+  root: "/kaggle/input/vai-nvs-data-hcm0031/train"   # <-- SỬA LẠI cho đúng dataset của bạn
+  type: "colmap"                  # colmap | nerf_transforms
+  images:
+    directory: "images"
+    resolution: -1
+    white_background: false
+  cameras:
+    source: "colmap"
+  pointcloud:
+    source: "sparse"
+  target_views:
+    file: "target_poses.json"
+  split:
+    mode: "ratio"
+    ratio: 0.1
+
+preprocessing:
+  normalize_scene: true
+  initialize_pointcloud:
+    method: "sparse"
+    random_points: 100000
+  colmap:
+    # QUAN TRỌNG: để false trên Kaggle nếu dataset ĐÃ có sẵn sparse/0.
+    # Nếu bật true, run_colmap_pipeline() sẽ cố GHI database.db/sparse/ vào
+    # chính `dataset.root` -> lỗi PermissionError vì /kaggle/input read-only.
+    # Nếu bạn thực sự cần tự chạy SfM trên Kaggle, phải trỏ workspace ra
+    # /kaggle/working/ trước (không hỗ trợ trực tiếp qua key này, xem README).
+    enabled: false
+    executable: "colmap"
+    camera_model: "PINHOLE"
+  cache:
+    images: true

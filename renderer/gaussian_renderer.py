@@ -1,7 +1,8 @@
 """
 Renderer: wrap thư viện rasterization khả vi cho 3D Gaussian Splatting.
 Mặc định dùng `gsplat` (pip install gsplat) - nhẹ và dễ cài hơn CUDA extension
-gốc `diff-gaussian-rasterization`. Có thể đổi backend qua config.
+gốc `diff-gaussian-rasterization`. Có thể đổi backend qua config
+(renderer.backend: "gsplat" | "diff_gaussian_rasterization").
 
 Trả về: ảnh render (3,H,W), radii (dùng để prune theo screen size), và
 viewspace_points (giữ gradient để tính stats densification).
@@ -39,7 +40,13 @@ def _render_gsplat(camera, gaussians, bg_color, scaling_modifier):
         gaussians.active_sh_degree, viewdirs, gaussians.features)
     colors = torch.clamp_min(colors + 0.5, 0.0)
 
-    viewmat = camera.world_view_transform.transpose(0, 1)  # gsplat dùng cam->world? kiểm tra convention
+    # camera.world_view_transform (utils/camera_utils.py) đã là ma trận
+    # world->cam CHUYỂN VỊ 1 lần theo convention của diff-gaussian-rasterization
+    # gốc (row-vector). gsplat.rasterization() lại cần viewmat dạng world->cam
+    # thông thường (column-vector, KHÔNG transpose) -> transpose lại 1 lần nữa
+    # ở đây để "huỷ" transpose trước đó và trả về đúng convention gsplat cần.
+    # Nếu đổi/viết lại Camera trong utils/camera_utils.py, kiểm tra lại dòng này.
+    viewmat = camera.world_view_transform.transpose(0, 1)
     K = _fov_to_intrinsics(camera)
 
     render_colors, render_alphas, meta = gsplat.rasterization(

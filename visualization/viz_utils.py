@@ -5,6 +5,8 @@ CloudCompare), và vẽ quỹ đạo camera (train/eval/target) để kiểm tra
 góc nhìn quanh trạm BTS.
 """
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # tránh lỗi khi chạy trên máy/server không có display
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 

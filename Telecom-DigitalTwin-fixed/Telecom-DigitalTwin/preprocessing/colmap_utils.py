@@ -165,17 +165,28 @@ def read_cameras_text(path):
 
 
 def read_images_text(path):
+    """Đọc tuần tự từng dòng (không lọc bỏ dòng trống): mỗi ảnh chiếm đúng 2
+    dòng - dòng metadata + dòng điểm 2D (có thể RỖNG nếu ảnh không có keypoint
+    nào). Lọc bỏ dòng trống như cách làm trước đây sẽ làm lệch cặp dòng ngay
+    khi gặp ảnh có dòng điểm 2D rỗng, khiến ĐỌC SAI gần một nửa số ảnh phía
+    sau trong file."""
     images = {}
     with open(path, "r", encoding="utf-8") as f:
-        lines = [l for l in f if not l.startswith("#") and len(l.strip()) > 0]
-    for i in range(0, len(lines), 2):
-        elems = lines[i].split()
-        img_id = int(elems[0])
-        qvec = np.array(list(map(float, elems[1:5])))
-        tvec = np.array(list(map(float, elems[5:8])))
-        camera_id = int(elems[8])
-        name = elems[9]
-        images[img_id] = Image(img_id, qvec, tvec, camera_id, name, None, None)
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            line = line.strip()
+            if len(line) == 0 or line.startswith("#"):
+                continue
+            elems = line.split()
+            img_id = int(elems[0])
+            qvec = np.array(list(map(float, elems[1:5])))
+            tvec = np.array(list(map(float, elems[5:8])))
+            camera_id = int(elems[8])
+            name = elems[9]
+            f.readline()  # dòng điểm 2D - không dùng tới trong pipeline này, bỏ qua nhưng PHẢI đọc để giữ đúng vị trí con trỏ file
+            images[img_id] = Image(img_id, qvec, tvec, camera_id, name, None, None)
     return images
 
 

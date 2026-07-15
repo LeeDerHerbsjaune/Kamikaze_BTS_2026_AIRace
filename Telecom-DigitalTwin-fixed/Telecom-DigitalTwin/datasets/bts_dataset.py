@@ -107,12 +107,18 @@ class BTSDataset:
 
         images_dir = os.path.join(self.data_root, cfg_get(self.cfg, "dataset.images.directory", "images"))
         all_cams_raw = []  # (uid, R, T, FoVx, FoVy, image_tensor, name) trước khi normalize
+        missing = []
         for img_id, img_meta in sorted(images_meta.items()):
             cam_meta = cameras_meta[img_meta.camera_id]
+
+            img_path = self._resolve_image_path(images_dir, img_meta.name)
+            if img_path is None:
+                missing.append(img_meta.name)
+                continue
+
             R = qvec2rotmat(img_meta.qvec)
             T = img_meta.tvec
 
-            img_path = os.path.join(images_dir, img_meta.name)
             pil_img = PILImage.open(img_path).convert("RGB")
             w, h = pil_img.size
 
@@ -129,6 +135,18 @@ class BTSDataset:
 
             all_cams_raw.append((img_id, R, T, FoVx, FoVy, image_tensor, img_meta.name))
 
+        if missing:
+            preview = ", ".join(missing[:5]) + (f", ... (+{len(missing) - 5} nữa)" if len(missing) > 5 else "")
+            print(f"[BTSDataset] CẢNH BÁO: {len(missing)}/{len(images_meta)} ảnh có trong "
+                  f"sparse reconstruction nhưng KHÔNG tìm thấy file trong '{images_dir}': {preview}\n"
+                  f"Các ảnh này bị BỎ QUA khỏi tập train/eval (không phải lỗi code - kiểm tra lại "
+                  f"dataset gốc nếu số lượng thiếu quá lớn).")
+        if not all_cams_raw:
+            raise FileNotFoundError(
+                f"Không load được BẤT KỲ ảnh nào từ '{images_dir}' (toàn bộ "
+                f"{len(images_meta)} ảnh trong sparse reconstruction đều thiếu file). "
+                f"Kiểm tra lại 'dataset.images.directory' trong configs/dataset.yaml.")
+
         if points3D:
             xyz, rgb = get_scene_pointcloud(points3D)
         else:
@@ -143,6 +161,22 @@ class BTSDataset:
 
         self._split_train_eval(all_cams)
 
+    @staticmethod
+    def _resolve_image_path(images_dir, name):
+        """Tìm file ảnh khớp với `name` trong sparse reconstruction, dò thêm
+        vài biến thể phổ biến (khác hoa/thường phần mở rộng, ví dụ .JPG so
+        với .jpg) trước khi coi là thiếu hẳn. Trả về None nếu không tìm thấy."""
+        direct = os.path.join(images_dir, name)
+        if os.path.isfile(direct):
+            return direct
+
+        stem, ext = os.path.splitext(name)
+        for candidate_ext in (ext.lower(), ext.upper(), ".jpg", ".JPG", ".jpeg", ".JPEG", ".png", ".PNG"):
+            candidate = os.path.join(images_dir, stem + candidate_ext)
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
     # ------------------------------------------------------------------
     def _load_nerf_transforms(self):
         """Đọc format transforms.json kiểu NeRF/Instant-NGP (dùng khi đề bài
@@ -153,16 +187,26 @@ class BTSDataset:
         images_dir = self.data_root
         camera_angle_x = meta.get("camera_angle_x")
         all_cams_raw = []
+        missing = []
         for i, frame in enumerate(meta["frames"]):
+            raw_path = os.path.join(images_dir, frame["file_path"])
+            img_path = raw_path if os.path.isfile(raw_path) else None
+            if img_path is None:
+                for ext in (".png", ".jpg", ".jpeg", ".JPG", ".JPEG", ".PNG"):
+                    candidate = raw_path if raw_path.lower().endswith((".png", ".jpg", ".jpeg")) else raw_path + ext
+                    if os.path.isfile(candidate):
+                        img_path = candidate
+                        break
+            if img_path is None:
+                missing.append(frame["file_path"])
+                continue
+
             c2w = np.array(frame["transform_matrix"])
             c2w[:3, 1:3] *= -1  # NeRF -> COLMAP convention
             w2c = np.linalg.inv(c2w)
             R = w2c[:3, :3]
             T = w2c[:3, 3]
 
-            img_path = os.path.join(images_dir, frame["file_path"])
-            if not img_path.endswith((".png", ".jpg", ".jpeg")):
-                img_path += ".png"
             pil_img = PILImage.open(img_path).convert("RGB")
             w, h = pil_img.size
 
@@ -173,6 +217,16 @@ class BTSDataset:
                 np.array(pil_img)).permute(2, 0, 1).float() / 255.0
 
             all_cams_raw.append((i, R, T, FoVx, FoVy, image_tensor, os.path.basename(img_path)))
+
+        if missing:
+            preview = ", ".join(missing[:5]) + (f", ... (+{len(missing) - 5} nữa)" if len(missing) > 5 else "")
+            print(f"[BTSDataset] CẢNH BÁO: {len(missing)}/{len(meta['frames'])} frame trong transforms.json "
+                  f"nhưng KHÔNG tìm thấy file ảnh trong '{images_dir}': {preview}\n"
+                  f"Các frame này bị BỎ QUA khỏi tập train/eval.")
+        if not all_cams_raw:
+            raise FileNotFoundError(
+                f"Không load được BẤT KỲ ảnh nào cho transforms.json (toàn bộ "
+                f"{len(meta['frames'])} frame đều thiếu file ảnh trong '{images_dir}').")
 
         self._fit_normalization(all_cams_raw)
         all_cams = [self._build_camera(*c) for c in all_cams_raw]

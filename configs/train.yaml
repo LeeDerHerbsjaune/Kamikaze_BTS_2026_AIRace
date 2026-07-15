@@ -69,6 +69,11 @@ densify:
 
   grad_threshold: 0.0002
 
+  clone_factor: 2
+  split_factor: 2
+  min_world_size_ratio: 0.00001
+  max_gaussians: null
+
 # ==========================================================
 # Gaussian Pruning
 # ==========================================================
@@ -86,3 +91,11 @@ pruning:
     max_screen: 20
 
     max_world_ratio: 0.1
+
+  schedule:
+
+    # Prune nhẹ theo lịch riêng, độc lập với chu kỳ densify chính.
+    # Mặc định dùng lại from_iter/interval của densify nếu để null.
+    after_iter: null
+    interval: null
+    min_visible_count: null

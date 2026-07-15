@@ -3,7 +3,7 @@
 # ==========================================================
 
 dataset:
-  root: r"E:/project/AIRace2026/VAI_NVS_DATA/phase1/public_set/hcm0031/train"
+  root: "E:/project/AIRace2026/VAI_NVS_DATA/phase1/public_set/hcm0031/train"
   type: "colmap"                  # colmap | nerf_transforms
   images:
     directory: "images"

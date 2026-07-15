@@ -17,6 +17,7 @@ def build_rotation(r):
     R[:, 2, 2] = 1 - 2 * (x ** 2 + y ** 2)
     return R
 
+
 def build_scaling_rotation(scaling, rotation):
     L = torch.zeros((scaling.shape[0], 3, 3), device=scaling.device)
     R = build_rotation(rotation)

@@ -34,13 +34,15 @@ def evaluate_view(rendered: torch.Tensor, gt: torch.Tensor, use_lpips=True):
 
 @torch.no_grad()
 def evaluate_dataset(cameras, gaussians, render_fn, bg_color, use_lpips=True):
-    """Chạy evaluate trên toàn bộ tập eval_cameras, trả về giá trị trung bình."""
-    totals = {"psnr": 0.0, "ssim": 0.0, "lpips": 0.0}
+    """Chạy evaluate trên toàn bộ tập eval_cameras, trả về giá trị trung bình.
+    Trả về {} nếu không có camera eval nào (vd split ratio quá nhỏ)."""
+    if not cameras:
+        return {}
+    totals = {}
     n = len(cameras)
     for cam in cameras:
         out = render_fn(cam, gaussians, bg_color)
         metrics = evaluate_view(out["render"], cam.image.to(out["render"].device), use_lpips)
-        for k in totals:
-            if k in metrics:
-                totals[k] += metrics[k]
+        for k, v in metrics.items():
+            totals[k] = totals.get(k, 0.0) + v
     return {k: v / n for k, v in totals.items()}

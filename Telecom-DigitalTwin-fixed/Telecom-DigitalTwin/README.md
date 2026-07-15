@@ -88,6 +88,13 @@ bash scripts/train.sh configs/default.yaml
 -> train (densify/prune) -> validation định kỳ -> save checkpoint -> render
 20-50 novel view ảnh cuối cùng vào `outputs/<experiment_name>/novel_views/`.
 
+## Chạy trên Kaggle Notebook
+
+Xem hướng dẫn riêng: [`KAGGLE.md`](./KAGGLE.md). Dùng
+`configs/default.kaggle.yaml` (include `configs/dataset.kaggle.yaml`, trỏ
+sẵn vào `/kaggle/input/...` và ghi output vào `/kaggle/working/outputs/`)
+thay vì `configs/default.yaml`.
+
 ## Chỉ render lại (đã có checkpoint)
 
 ```bash

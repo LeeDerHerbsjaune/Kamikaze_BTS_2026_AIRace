@@ -66,14 +66,20 @@ class GaussianModel:
     # ---------------- Init từ point cloud (SfM hoặc random) ----------------
     def create_from_pcd(self, xyz: np.ndarray, rgb: np.ndarray, spatial_lr_scale: float,
                          opacity_init: float = 0.1, scale_init_factor: float = 1.0):
+        """opacity_init/scale_init_factor mặc định khớp configs/gaussian.yaml
+        (model.init.opacity, model.init.scale_factor) - train.py truyền trực
+        tiếp 2 giá trị này từ config thay vì hard-code."""
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(xyz, dtype=torch.float32, device=self.device)
         fused_color = RGB2SH(torch.tensor(rgb, dtype=torch.float32, device=self.device))
 
         n = fused_point_cloud.shape[0]
+        # features: (N, 3 kênh RGB, num_sh_bases). Chỉ set hệ số SH bậc 0 (DC,
+        # index cuối = 0) bằng màu quan sát được; các bậc cao hơn (index 1:)
+        # để 0 vì torch.zeros() đã khởi tạo sẵn - model sẽ tự học dần trong
+        # lúc train khi active_sh_degree tăng lên (xem oneup_sh_degree()).
         features = torch.zeros((n, 3, num_sh_bases(self.max_sh_degree)), device=self.device)
-        features[:, :3, 0] = fused_color
-        features[:, 3:, 1:] = 0.0
+        features[:, :, 0] = fused_color
 
         dist2 = torch.clamp_min(self._nn_dist_squared(fused_point_cloud), 1e-7)
         scales = torch.log(torch.sqrt(dist2) * scale_init_factor)[..., None].repeat(1, 3)
@@ -104,7 +110,7 @@ class GaussianModel:
             chunks.append(knn.mean(dim=1) ** 2)
         return torch.cat(chunks)
 
-    # ---------------- Checkpoint (gộp từ checkpoint.py) ----------------
+    # ---------------- Checkpoint ----------------
     def capture(self) -> dict:
         """Snapshot đầy đủ để Trainer lưu checkpoint - đủ để resume training
         (không chỉ để render), nên giữ cả spatial_lr_scale và max_radii2D."""

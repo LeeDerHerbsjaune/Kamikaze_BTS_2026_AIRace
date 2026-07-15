@@ -97,7 +97,73 @@
 - Kiến trúc tổng thể (`docs/architecture.md`) và luồng
   Dataset → Preprocessing → GaussianModel → Renderer → Trainer → Inference.
 
-## Cách kiểm tra nhanh sau khi sửa
+## 🔵 Bổ sung sau kiểm thử tích hợp (integration test) lần 2
+
+14. **`read_images_text()` lọc bỏ luôn cả dòng trống**, không chỉ dòng
+    comment. Trong `images.txt` chuẩn COLMAP, mỗi ảnh chiếm đúng 2 dòng
+    (metadata + điểm 2D), và dòng điểm 2D CÓ THỂ RỖNG nếu ảnh không có
+    keypoint nào khớp track. Cách lọc cũ (`[l for l in f if not l.startswith("#")
+    and len(l.strip()) > 0]` rồi bắt cặp `range(0, len(lines), 2)`) sẽ làm
+    lệch toàn bộ cặp dòng ngay khi gặp ảnh đầu tiên có dòng điểm 2D rỗng,
+    khiến các ảnh phía sau trong file bị đọc sai id/pose (số ảnh đọc được có
+    thể giảm gần một nửa, tuỳ dataset). Đã sửa lại đọc tuần tự `readline()`
+    từng dòng, khớp đúng cách COLMAP chính thức đọc file này. **Đây là bug
+    có khả năng ảnh hưởng dữ liệu thật cao nhất trong đợt sửa này** - nếu
+    dataset thi đấu của bạn từng "chạy được nhưng thiếu ảnh train" thì rất
+    có thể là do bug này.
+
+15. **`run_colmap_pipeline()`**: kiểm tra `colmap_exe` có tồn tại trong PATH
+    trước khi gọi `subprocess.run(...)`, báo lỗi hướng dẫn cụ thể (cài COLMAP
+    / sửa `preprocessing.colmap.executable` / kiểm tra `dataset.root`) thay vì
+    để `subprocess` ném `FileNotFoundError: WinError 2` khó hiểu.
+
+16. **`_load_colmap()`**: tự dò `sparse/0/` hoặc `sparse/` (fallback không có
+    thư mục con `0`), và chỉ tự động chạy COLMAP khi
+    `preprocessing.colmap.enabled: true` được bật tường minh - trước đây nó
+    tự chạy bất cứ khi nào không thấy sẵn sparse reconstruction, kể cả khi
+    người dùng chỉ gõ sai đường dẫn `dataset.root`.
+
+17. **`load_colmap_scene()` giờ hỗ trợ cả `.bin` (mặc định COLMAP) lẫn `.txt`**,
+    tự phát hiện định dạng. Trước đây chỉ đọc được `.txt`, trong khi hầu hết
+    dataset SfM thật xuất ra `.bin`. Đã roundtrip-test `read_cameras_binary`,
+    `read_images_binary`, `read_points3D_binary` với dữ liệu nhị phân giả lập
+    khớp đúng spec COLMAP gốc.
+
+## Đã kiểm thử tích hợp (integration test)
+
+Repo đã được test end-to-end trên dataset COLMAP giả lập (10 ảnh, point cloud
+200 điểm, 3 target novel views) và dataset `nerf_transforms` giả lập (6 ảnh),
+bao gồm: load dataset → train/eval split đúng tỉ lệ → normalize_scene đúng
+(camera centers nằm trong bán kính ~1) → khởi tạo GaussianModel từ point cloud
+lẫn từ random init → build Trainer (tôn trọng `model.optimize.*`, báo lỗi rõ
+ràng khi cấu hình xung đột với densify) → chạy thử densify/prune/reset_opacity
+(shape các thuộc tính Gaussian luôn đồng bộ sau resize) → save/restore
+checkpoint → save .ply → evaluate_dataset với render function giả (PSNR/SSIM).
+Toàn bộ chạy đúng, không lỗi shape/KeyError nào phát sinh.
+
+## 🟢 Bổ sung sau khi chạy trên dataset thi đấu thật (lần 3)
+
+18. **`images.txt` trong sparse reconstruction tham chiếu ảnh KHÔNG tồn tại
+    trong thư mục `images/`** (dataset thi đấu có thể thiếu 1 vài ảnh so với
+    reconstruction gốc, hoặc lệch hoa/thường phần mở rộng, vd `.JPG` vs
+    `.jpg`). Trước đây 1 ảnh thiếu sẽ làm crash TOÀN BỘ pipeline ngay từ đầu
+    (`PILImage.open()` → `FileNotFoundError`), dù 99% ảnh còn lại vẫn dùng
+    được. Đã sửa `_load_colmap()`:
+    - Tự dò vài biến thể phần mở rộng phổ biến (`.jpg/.JPG/.jpeg/.JPEG/.png/.PNG`)
+      trước khi coi là thiếu hẳn.
+    - Ảnh nào thực sự không tìm thấy sẽ bị **bỏ qua** (không đưa vào
+      train/eval), kèm cảnh báo in ra danh sách ảnh thiếu - không phải lỗi
+      code, chỉ là cảnh báo dữ liệu.
+    - Chỉ raise lỗi cứng nếu **toàn bộ** ảnh trong reconstruction đều thiếu
+      (khi đó gần như chắc chắn `dataset.images.directory` trỏ sai).
+    Đã test với dataset giả lập thiếu 2/10 ảnh + 1 ảnh lệch hoa/thường phần mở
+    rộng: pipeline load đúng 8 ảnh còn lại, tự dò ra bản `.JPG`, không crash.
+    Cùng cơ chế bỏ-qua-ảnh-thiếu này cũng đã được áp dụng cho
+    `_load_nerf_transforms()` (trước đó chỉ có ở `_load_colmap()`), test với
+    dataset `transforms.json` giả lập thiếu 1/6 frame: load đúng 5 frame còn
+    lại.
+
+
 
 ```bash
 pip install -r requirements.txt

@@ -3,7 +3,12 @@ Loss function cho training 3DGS: kết hợp L1 (robust với noise) và SSIM
 (giữ cấu trúc/structure của ảnh, quan trọng cho chi tiết thiết bị nhỏ trên trạm BTS
 như anten, dây cáp, giá đỡ).
 
-total_loss = (1 - lambda_dssim) * L1 + lambda_dssim * (1 - SSIM)
+total_loss = l1_weight * L1 + dssim_weight * (1 - SSIM)
+
+lambda_dssim truyền vào compute_loss() lấy từ configs/loss.yaml: loss.dssim.weight
+(loss.l1.weight cũng có trong config nhưng công thức gốc 3DGS chỉ dùng 1 hệ số
+lambda_dssim và ngầm định l1_weight = 1 - lambda_dssim; nếu muốn 2 trọng số độc
+lập, dùng compute_loss_weighted() bên dưới).
 """
 import torch
 import torch.nn.functional as F
@@ -49,7 +54,17 @@ def ssim(img1, img2, window_size=11):
 
 
 def compute_loss(rendered, gt, lambda_dssim=0.2):
+    """Công thức chuẩn 3DGS gốc: total = (1-lambda)*L1 + lambda*(1-SSIM)."""
     l1 = l1_loss(rendered, gt)
     s = ssim(rendered, gt)
     total = (1.0 - lambda_dssim) * l1 + lambda_dssim * (1.0 - s)
+    return total, {"l1": l1.item(), "ssim": s.item()}
+
+
+def compute_loss_weighted(rendered, gt, l1_weight=0.8, dssim_weight=0.2):
+    """Biến thể dùng đúng 2 trọng số độc lập loss.l1.weight / loss.dssim.weight
+    trong configs/loss.yaml, thay vì giả định chúng luôn cộng lại bằng 1."""
+    l1 = l1_loss(rendered, gt)
+    s = ssim(rendered, gt)
+    total = l1_weight * l1 + dssim_weight * (1.0 - s)
     return total, {"l1": l1.item(), "ssim": s.item()}

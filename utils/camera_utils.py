@@ -60,12 +60,16 @@ class Camera:
         self.image = image      # (3,H,W) tensor float [0,1] hoặc None cho novel view
         self.width = width if width is not None else (image.shape[2] if image is not None else None)
         self.height = height if height is not None else (image.shape[1] if image is not None else None)
+        if self.width is None or self.height is None:
+            raise ValueError(
+                f"Camera '{image_name}': cần width/height tường minh khi image=None "
+                f"(novel view không có ground truth để suy ra kích thước ảnh).")
         self.znear = znear
         self.zfar = zfar
         self.device = device
 
         self.world_view_transform = torch.tensor(
-            getWorld2View(R, T)).transpose(0, 1).to(device)
+            getWorld2View(R, T), dtype=torch.float32).transpose(0, 1).to(device)
         self.projection_matrix = getProjectionMatrix(
             znear=znear, zfar=zfar, fovX=FoVx, fovY=FoVy).transpose(0, 1).to(device)
         self.full_proj_transform = (
