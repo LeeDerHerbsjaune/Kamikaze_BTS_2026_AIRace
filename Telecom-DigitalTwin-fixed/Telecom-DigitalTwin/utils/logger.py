@@ -6,7 +6,7 @@ import datetime
 class Logger:
     def __init__(self, log_dir, use_tensorboard=True):
         os.makedirs(log_dir, exist_ok=True)
-        self.log_file = open(os.path.join(log_dir, "train.log"), "a")
+        self.log_file = open(os.path.join(log_dir, "train.log"), "a", encoding="utf-8")
         self.tb = None
         if use_tensorboard:
             try:

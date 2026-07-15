@@ -19,7 +19,7 @@ import torch
 from utils.general_utils import set_seed
 from utils.logger import Logger
 from utils.config_loader import load_config, cfg_get
-from dataloader.bts_dataset import BTSDataset
+from datasets.bts_dataset import BTSDataset
 from models.gaussian_model import GaussianModel
 from trainers.trainer import Trainer
 from visualization.viz_utils import plot_camera_trajectory
@@ -27,27 +27,14 @@ from visualization.viz_utils import plot_camera_trajectory
 
 def main():
     parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/default.yaml"
-    )
-    parser.add_argument(
-        "--data_root",
-        type=str,
-        default=None,
-        help="Override dataset root"
-    )
+    parser.add_argument("--config", type=str, default="configs/default.yaml")
     args = parser.parse_args()
-    
+
     # ---------- Load Config ----------
     cfg = load_config(args.config)
-    # Override dataset root
-    if args.data_root is not None:
-        cfg["dataset"]["root"] = args.data_root 
     exp_dir = os.path.join("outputs", cfg["experiment_name"])
     os.makedirs(exp_dir, exist_ok=True)
+
     # Override thư mục output theo experiment_name (đè lên giá trị tĩnh trong
     # configs/train.yaml và configs/inference.yaml, vốn chỉ là default).
     cfg.setdefault("training", {})["checkpoint_dir"] = os.path.join(exp_dir, "checkpoints")
