@@ -64,3 +64,9 @@
 [2026-07-15 12:55:35] Train views: 216, Eval views: 24, Target novel views: 0
 [2026-07-15 12:55:35] Khởi tạo Gaussian Model từ point cloud...
 [2026-07-15 12:57:58] Số Gaussian khởi tạo: 165726
+[2026-07-15 13:27:13] Bắt đầu experiment: bts_scene_01
+[2026-07-15 13:27:13] CẢNH BÁO: không tìm thấy CUDA, chạy trên CPU sẽ rất chậm với 3DGS.
+[2026-07-15 13:27:13] Đang load dataset (ảnh drone + camera pose)...
+[2026-07-15 13:27:32] Train views: 180, Eval views: 20, Target novel views: 0
+[2026-07-15 13:27:32] Khởi tạo Gaussian Model từ point cloud...
+[2026-07-15 13:31:44] Số Gaussian khởi tạo: 211262
