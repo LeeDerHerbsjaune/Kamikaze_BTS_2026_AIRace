@@ -3,115 +3,33 @@ Dataset loader cho scene trạm BTS: đọc ảnh drone RGB (100-300 ảnh/scene
 (dạng COLMAP hoặc transforms.json kiểu NeRF), chia train/eval, và cung cấp
 danh sách target novel-view poses (20-50 pose) cần render cho vòng inference.
 
-KIẾN TRÚC: phần đọc sparse reconstruction (cameras/images/points3D) qua pycolmap
-được giao cho `dataloader.colmap_loader.ColmapLoader` (đọc thuần, không biết gì
-về config/normalize/split). Module này CHỈ bọc thêm những phần ColmapLoader
-không đảm nhiệm:
-  1. Tự động chạy SfM bằng pycolmap nếu chưa có sparse model sẵn
-     (preprocessing.colmap.enabled=true) - ColmapLoader yêu cầu sparse_path đã
-     tồn tại, không tự chạy SfM.
-  2. Bỏ qua (thay vì raise ngay) ảnh có trong sparse model nhưng thiếu file
-     trên đĩa, có dò thêm biến thể đuôi file (.jpg/.JPG/.png...) - qua subclass
-     `_TolerantColmapLoader` override `_read_image_tensor` + `load_scene`.
-  3. normalize_scene: đưa scene về tâm (0,0,0), scale theo bán kính camera.
-     BẮT BUỘC áp dụng ĐỒNG NHẤT lên point cloud khởi tạo, camera train/eval,
-     VÀ camera target (novel views) - nếu không target novel views sẽ bị
-     render sai vị trí vì lệch hệ toạ độ so với model đã train.
-  4. Chia train/eval theo tỉ lệ config.
-  5. Đọc target novel-view poses (target_poses.json), áp cùng normalize.
-  6. Hỗ trợ song song format `nerf_transforms` (transforms.json), không đi qua
-     ColmapLoader/pycolmap.
+QUAN TRỌNG về normalize_scene: nếu preprocessing.normalize_scene=true, scene
+được đưa về tâm (0,0,0) và scale theo bán kính camera. Phép biến đổi này phải
+được áp dụng ĐỒNG NHẤT lên: point cloud khởi tạo, camera train/eval, VÀ
+camera target (novel views) - nếu không target novel views sẽ bị render sai vị
+trí vì lệch hệ toạ độ so với model đã train. Bản sửa này áp dụng normalize cho
+cả 3 nhóm, dựa trên thống kê tính từ train+eval cameras.
+
+VỀ COLMAP: thay vì gọi wrapper tự viết (preprocessing/colmap_utils.py) hoặc gọi
+COLMAP CLI qua subprocess, module này dùng trực tiếp thư viện `pycolmap`
+(binding Python chính chủ của COLMAP):
+  - Đọc sparse model (cameras/images/points3D) qua `pycolmap.Reconstruction`.
+  - Nếu chưa có sparse model và `preprocessing.colmap.enabled=true`, tự chạy
+    pipeline SfM bằng `pycolmap.extract_features` + `pycolmap.match_exhaustive`
+    + `pycolmap.incremental_mapping`, không cần COLMAP CLI có trong PATH.
+Chỉ còn `normalize_scene` là giữ lại từ preprocessing.colmap_utils (logic
+chuẩn hoá scene riêng của project, không thuộc phạm vi pycolmap).
 """
 import os
 import json
-
 import numpy as np
-import cv2
-import torch
 from PIL import Image as PILImage
-
+import torch
 import pycolmap
 
-from dataloader.entities import Frame, Scene
-from dataloader.colmap import ColmapLoader
 from preprocessing.colmap_utils import normalize_scene
 from utils.camera_utils import Camera, focal2fov
 from utils.config_loader import cfg_get
-
-
-# ======================================================================
-# Subclass "tolerant": bù 2 hành vi ColmapLoader gốc không có, KHÔNG sửa
-# trực tiếp dataloader/colmap_loader.py (giữ ColmapLoader thuần như thiết kế
-# gốc, chỉ mở rộng qua kế thừa).
-# ======================================================================
-class _TolerantColmapLoader(ColmapLoader):
-    """Dò thêm biến thể đuôi file ảnh, và bỏ qua (thay vì raise ngay) các ảnh
-    có trong sparse model nhưng không tìm thấy file thật trên đĩa - chỉ raise
-    nếu TOÀN BỘ ảnh đều thiếu (giống hành vi BTSDataset bản trước)."""
-
-    def _resolve_image_path(self, image_name: str):
-        direct = os.path.join(self.images_dir, image_name)
-        if os.path.isfile(direct):
-            return direct
-        stem, ext = os.path.splitext(image_name)
-        for candidate_ext in (ext.lower(), ext.upper(), ".jpg", ".JPG",
-                               ".jpeg", ".JPEG", ".png", ".PNG"):
-            candidate = os.path.join(self.images_dir, stem + candidate_ext)
-            if os.path.isfile(candidate):
-                return candidate
-        return None
-
-    def _read_image_tensor(self, image_name: str) -> torch.Tensor:
-        image_path = self._resolve_image_path(image_name)
-        if image_path is None:
-            raise FileNotFoundError(image_name)  # bắt lại ở load_scene() bên dưới
-        rgb = cv2.imread(image_path)
-        if rgb is None:
-            raise FileNotFoundError(f"File tồn tại nhưng không đọc được (hỏng/không đúng định dạng): {image_path}")
-        rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
-        tensor = torch.from_numpy(rgb).float() / 255.0
-        return tensor.permute(2, 0, 1)
-
-    def load_scene(self, min_track_length: int = 3, max_error=2.0) -> Scene:
-        cameras = self.load_cameras()
-        images = self.load_images()
-        point_cloud = self.load_points3D(min_track_length=min_track_length, max_error=max_error)
-
-        frames = []
-        missing_files = []
-        n_missing_camera = 0
-        # sort theo tên ảnh để thứ tự train/eval split ổn định, tái lập được
-        for image in sorted(images.values(), key=lambda im: im.name):
-            camera = cameras.get(image.camera_id)
-            if camera is None:
-                n_missing_camera += 1
-                continue
-            try:
-                image_tensor = self._read_image_tensor(image.name)
-            except FileNotFoundError:
-                missing_files.append(image.name)
-                continue
-            frames.append(Frame(camera=camera, R=image.R, t=image.t,
-                                 image_name=image.name, image=image_tensor))
-
-        if n_missing_camera:
-            print(f"[BTSDataset] Bỏ qua {n_missing_camera} ảnh do không tìm thấy "
-                  f"camera_id tương ứng trong sparse reconstruction.")
-        if missing_files:
-            preview = ", ".join(missing_files[:5]) + (
-                f", ... (+{len(missing_files) - 5} nữa)" if len(missing_files) > 5 else "")
-            print(f"[BTSDataset] CẢNH BÁO: {len(missing_files)}/{len(images)} ảnh có trong "
-                  f"sparse reconstruction nhưng KHÔNG tìm thấy file trong '{self.images_dir}': "
-                  f"{preview}\nCác ảnh này bị BỎ QUA khỏi tập train/eval (không phải lỗi code - "
-                  f"kiểm tra lại dataset gốc nếu số lượng thiếu quá lớn).")
-        if not frames:
-            raise FileNotFoundError(
-                f"Không load được BẤT KỲ ảnh nào từ '{self.images_dir}' (toàn bộ "
-                f"{len(images)} ảnh trong sparse reconstruction đều thiếu file hoặc "
-                f"thiếu camera tương ứng). Kiểm tra lại 'dataset.images.directory' "
-                f"trong configs/dataset.yaml.")
-
-        return Scene(cameras=cameras, frames=frames, point_cloud=point_cloud)
 
 
 class BTSDataset:
@@ -125,17 +43,18 @@ class BTSDataset:
         if self.format is None:
             raise KeyError("Thiếu key bắt buộc trong config: 'dataset.type'")
 
-        self.train_cameras = []
-        self.eval_cameras = []
-        self.target_cameras = []   # novel views cần sinh (không có ground truth)
+        self.train_cameras = [] # camera train, ảnh có ground truth, list dùng để train model
+        self.eval_cameras = [] # camera có ground truth, list dùng để tính loss/metric
+        self.target_cameras = []   # novel views cần sinh (không có ground truth), list dùng để render ra ảnh
         self.point_cloud_xyz = None
         self.point_cloud_rgb = None
 
-        # Tham số normalize_scene (tính 1 lần từ train+eval cameras, áp dụng
-        # đồng nhất cho point cloud + target cameras).
+        # Tham số normalize_scene (tính 1 lần từ train+eval cameras, áp dụng đồng nhất cho point cloud + target cameras).
+        # the formula: X_norm = (X - center) * scale, with scale = 1/max_dist_to_center
         self._norm_center = np.zeros(3, dtype=np.float32)
         self._norm_scale = 1.0
 
+        #check dataset format
         if self.format == "colmap":
             self._load_colmap()
         elif self.format == "nerf_transforms":
@@ -164,7 +83,6 @@ class BTSDataset:
             return candidate_flat
         return candidate_0  # mặc định trả về đường dẫn chuẩn để báo lỗi rõ ràng phía sau
 
-    # ------------------------------------------------------------------
     def _load_colmap(self):
         sparse_dir = self._resolve_sparse_dir()
         colmap_enabled = cfg_get(self.cfg, "preprocessing.colmap.enabled", False)
@@ -180,30 +98,63 @@ class BTSDataset:
                     f"chưa chạy SfM, bật 'preprocessing.colmap.enabled: true' để tự động "
                     f"chạy SfM bằng pycolmap (chỉ cần `pip install pycolmap`, không cần "
                     f"cài COLMAP CLI/PATH).")
-            sparse_dir = self._run_pycolmap_pipeline(images_dir, self.data_root)
+            reconstruction = self._run_pycolmap_pipeline(images_dir, self.data_root)
         elif colmap_enabled:
             # Người dùng bật colmap.enabled tường minh dù sparse_dir đã tồn tại
             # -> tôn trọng lựa chọn, chạy lại SfM từ đầu.
-            sparse_dir = self._run_pycolmap_pipeline(images_dir, self.data_root)
+            reconstruction = self._run_pycolmap_pipeline(images_dir, self.data_root)
+        else:
+            reconstruction = pycolmap.Reconstruction(sparse_dir)
 
-        min_track_length = cfg_get(self.cfg, "preprocessing.pointcloud.min_track_length", 3)
-        max_reproj_error = cfg_get(self.cfg, "preprocessing.pointcloud.max_reproj_error", 2.0)
+        all_cams_raw = []  # (uid, R, T, FoVx, FoVy, image_tensor, name) trước khi normalize
+        missing = []
+        for img_id, img_meta in sorted(reconstruction.images.items()):
+            cam_meta = reconstruction.cameras[img_meta.camera_id]
 
-        loader = _TolerantColmapLoader(sparse_dir, images_dir)
-        scene = loader.load_scene(min_track_length=min_track_length, max_error=max_reproj_error)
+            img_path = self._resolve_image_path(images_dir, img_meta.name)
+            if img_path is None:
+                missing.append(img_meta.name)
+                continue
 
-        # (uid, R, T, FoVx, FoVy, image_tensor, name) trước khi normalize -
-        # cùng shape mà _fit_normalization/_build_camera mong đợi.
-        all_cams_raw = []
-        for i, frame in enumerate(scene.frames):
-            cam = frame.camera
-            FoVx = focal2fov(cam.fx, cam.width)
-            FoVy = focal2fov(cam.fy, cam.height)
-            all_cams_raw.append((i, frame.R, frame.t, FoVx, FoVy, frame.image, frame.image_name))
+            # pycolmap: pose world->cam nằm ở image.cam_from_world (Rigid3d).
+            pose = img_meta.cam_from_world
+            R = pose.rotation.matrix()
+            T = np.array(pose.translation, dtype=np.float64)
 
-        if scene.point_cloud:
-            xyz = np.array([p.xyz for p in scene.point_cloud.values()], dtype=np.float32)
-            rgb = np.array([p.color for p in scene.point_cloud.values()], dtype=np.uint8)
+            pil_img = PILImage.open(img_path).convert("RGB")
+            w, h = pil_img.size
+
+            model_name = getattr(cam_meta.model, "name", str(cam_meta.model))
+            params = np.asarray(cam_meta.params)
+            if model_name in ("PINHOLE", "OPENCV"):
+                fx, fy = params[0], params[1]
+            else:  # SIMPLE_PINHOLE / SIMPLE_RADIAL
+                fx = fy = params[0]
+
+            FoVx = focal2fov(fx, w)
+            FoVy = focal2fov(fy, h)
+
+            image_tensor = torch.from_numpy(
+                np.array(pil_img)).permute(2, 0, 1).float() / 255.0
+
+            all_cams_raw.append((img_id, R, T, FoVx, FoVy, image_tensor, img_meta.name))
+
+        n_images_total = reconstruction.num_images()
+        if missing:
+            preview = ", ".join(missing[:5]) + (f", ... (+{len(missing) - 5} nữa)" if len(missing) > 5 else "")
+            print(f"[BTSDataset] CẢNH BÁO: {len(missing)}/{n_images_total} ảnh có trong "
+                  f"sparse reconstruction nhưng KHÔNG tìm thấy file trong '{images_dir}': {preview}\n"
+                  f"Các ảnh này bị BỎ QUA khỏi tập train/eval (không phải lỗi code - kiểm tra lại "
+                  f"dataset gốc nếu số lượng thiếu quá lớn).")
+        if not all_cams_raw:
+            raise FileNotFoundError(
+                f"Không load được BẤT KỲ ảnh nào từ '{images_dir}' (toàn bộ "
+                f"{n_images_total} ảnh trong sparse reconstruction đều thiếu file). "
+                f"Kiểm tra lại 'dataset.images.directory' trong configs/dataset.yaml.")
+
+        if len(reconstruction.points3D) > 0:
+            xyz = np.array([p.xyz for p in reconstruction.points3D.values()], dtype=np.float32)
+            rgb = np.array([p.color for p in reconstruction.points3D.values()], dtype=np.uint8)
         else:
             xyz, rgb = None, None
 
@@ -218,9 +169,10 @@ class BTSDataset:
 
     def _run_pycolmap_pipeline(self, image_dir, output_root):
         """Tự chạy SfM bằng pycolmap (extract_features -> match_exhaustive ->
-        incremental_mapping), không cần COLMAP CLI/PATH. Ghi kết quả ra
-        '<output_root>/sparse/0' để lần chạy sau tái sử dụng ngay, khỏi phải
-        chạy lại SfM (tốn thời gian với 100-300 ảnh drone)."""
+        incremental_mapping), thay cho việc gọi COLMAP CLI qua subprocess.
+        Trả về `pycolmap.Reconstruction`, đồng thời ghi kết quả ra
+        '<output_root>/sparse/0' để các lần chạy sau tái sử dụng ngay mà
+        không cần chạy lại SfM (tốn thời gian với 100-300 ảnh drone)."""
         database_path = os.path.join(output_root, "database.db")
         sparse_out = os.path.join(output_root, "sparse")
         os.makedirs(sparse_out, exist_ok=True)
@@ -249,15 +201,29 @@ class BTSDataset:
         # -> lấy model đăng ký được nhiều ảnh nhất.
         best_key = max(maps, key=lambda k: maps[k].num_reg_images())
         reconstruction = maps[best_key]
-        out_dir = os.path.join(sparse_out, "0")
-        reconstruction.write(out_dir)
-        return out_dir
+        reconstruction.write(os.path.join(sparse_out, "0"))
+        return reconstruction
+
+    @staticmethod
+    def _resolve_image_path(images_dir, name):
+        """Tìm file ảnh khớp với `name` trong sparse reconstruction, dò thêm
+        vài biến thể phổ biến (khác hoa/thường phần mở rộng, ví dụ .JPG so
+        với .jpg) trước khi coi là thiếu hẳn. Trả về None nếu không tìm thấy."""
+        direct = os.path.join(images_dir, name)
+        if os.path.isfile(direct):
+            return direct
+
+        stem, ext = os.path.splitext(name)
+        for candidate_ext in (ext.lower(), ext.upper(), ".jpg", ".JPG", ".jpeg", ".JPEG", ".png", ".PNG"):
+            candidate = os.path.join(images_dir, stem + candidate_ext)
+            if os.path.isfile(candidate):
+                return candidate
+        return None
 
     # ------------------------------------------------------------------
     def _load_nerf_transforms(self):
         """Đọc format transforms.json kiểu NeRF/Instant-NGP (dùng khi đề bài
-        cấp sẵn intrinsics/extrinsics thay vì COLMAP thô). Không đi qua
-        ColmapLoader/pycolmap - format này không phải sparse reconstruction."""
+        cấp sẵn intrinsics/extrinsics thay vì COLMAP thô)."""
         with open(os.path.join(self.data_root, "transforms.json"), encoding="utf-8") as f:
             meta = json.load(f)
 
