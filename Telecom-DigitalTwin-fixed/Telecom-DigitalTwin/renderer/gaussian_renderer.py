@@ -65,7 +65,21 @@ def _render_gsplat(camera, gaussians, bg_color, scaling_modifier):
 
     image = render_colors[0].permute(2, 0, 1).clamp(0, 1)  # (3,H,W)
     radii = meta["radii"][0] if "radii" in meta else torch.zeros(means3d.shape[0], device=means3d.device)
-    viewspace_points = meta.get("means2d", means3d)[0] if isinstance(meta.get("means2d"), torch.Tensor) else means3d
+
+    means2d = meta.get("means2d")
+    if isinstance(means2d, torch.Tensor):
+        viewspace_points = means2d[0]
+        # QUAN TRỌNG: means2d là tensor trung gian trong đồ thị tính toán của
+        # gsplat, KHÔNG phải leaf tensor -> .grad sẽ luôn là None sau
+        # loss.backward() nếu không gọi retain_grad() tường minh ở đây. Thiếu
+        # dòng này khiến Trainer.add_densification_stats() không bao giờ chạy
+        # (out["viewspace_points"].grad luôn None), vô hiệu hoá hoàn toàn
+        # densify/clone/split dù config có bật densify.enabled=true.
+        if viewspace_points.requires_grad and not viewspace_points.is_leaf:
+            viewspace_points.retain_grad()
+    else:
+        viewspace_points = means3d
+
     visibility_filter = radii > 0
 
     return {

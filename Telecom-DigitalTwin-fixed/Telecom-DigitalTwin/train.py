@@ -19,7 +19,7 @@ import torch
 from utils.general_utils import set_seed
 from utils.logger import Logger
 from utils.config_loader import load_config, cfg_get
-from dataloader.bts_dataset import BTSDataset
+from datasets.bts_dataset import BTSDataset
 from models.gaussian_model import GaussianModel
 from trainers.trainer import Trainer
 from visualization.viz_utils import plot_camera_trajectory
@@ -28,10 +28,16 @@ from visualization.viz_utils import plot_camera_trajectory
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")
+    parser.add_argument("--data_root", type=str, default=None,
+                         help="Ghi đè dataset.root trong config (tiện dùng trên Kaggle/Colab "
+                              "khi đường dẫn dataset đổi giữa các lần chạy mà không muốn sửa yaml).")
     args = parser.parse_args()
 
     # ---------- Load Config ----------
     cfg = load_config(args.config)
+    if args.data_root:
+        cfg.setdefault("dataset", {})["root"] = args.data_root
+
     output_root = cfg.get("output_root", "outputs")
     exp_dir = os.path.join(output_root, cfg["experiment_name"])
     os.makedirs(exp_dir, exist_ok=True)

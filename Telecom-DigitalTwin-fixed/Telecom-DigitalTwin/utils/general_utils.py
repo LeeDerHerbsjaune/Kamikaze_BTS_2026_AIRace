@@ -32,7 +32,11 @@ def get_expon_lr_func(lr_init, lr_final, lr_delay_mult=1.0, lr_delay_steps=0, ma
 
 
 def psnr(rendered: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
-    mse = ((rendered - gt) ** 2).view(rendered.shape[0], -1).mean(1, keepdim=True)
+    # .reshape() thay vì .view(): ảnh render đi qua permute(2,0,1) trong
+    # renderer nên KHÔNG liên tục trong bộ nhớ (non-contiguous) -> .view()
+    # sẽ raise RuntimeError ("view size is not compatible..."), trong khi
+    # .reshape() tự xử lý cả 2 trường hợp (copy ngầm nếu cần).
+    mse = ((rendered - gt) ** 2).reshape(rendered.shape[0], -1).mean(1, keepdim=True)
     return 20 * torch.log10(1.0 / torch.sqrt(mse))
 
 
