@@ -82,7 +82,7 @@ class ColmapLoader:
     def _extract_pose(colmap_image):
         """Tương thích cả API pycolmap cũ và mới, chỉ trả về (R, t)."""
         if hasattr(colmap_image, "cam_from_world"):
-            pose = colmap_image.cam_from_world
+            pose = colmap_image.cam_from_world()
             return pose.rotation.matrix(), pose.translation
         if hasattr(colmap_image, "R") and hasattr(colmap_image, "t"):
             return colmap_image.R, colmap_image.t
