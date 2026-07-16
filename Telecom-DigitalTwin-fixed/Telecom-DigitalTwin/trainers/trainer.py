@@ -159,11 +159,34 @@ class Trainer:
                 self.logger.log_scalar("train/n_gaussians", self.gaussians.xyz.shape[0], iteration)
 
             if iteration % eval_interval == 0 and self.dataset.eval_cameras:
-                metrics = evaluate_dataset(self.dataset.eval_cameras, self.gaussians,
-                                           render, self.bg_color,
-                                           use_lpips=use_lpips_eval)
-                if metrics:
-                    self.logger.log_dict("eval", metrics, iteration)
+                # Giải phóng cache CUDA trước khi vào eval: training tích luỹ
+                # nhiều block bộ nhớ đã free nhưng PyTorch giữ lại (caching
+                # allocator) để tái dùng nhanh hơn ở lần alloc sau. Ngay
+                # trước eval (dùng thêm mạng LPIPS/VGG khá nặng) là lúc nên
+                # trả lại cache này để giảm phân mảnh, tăng cơ hội đủ VRAM.
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                try:
+                    metrics = evaluate_dataset(self.dataset.eval_cameras, self.gaussians,
+                                               render, self.bg_color,
+                                               use_lpips=use_lpips_eval)
+                    if metrics:
+                        self.logger.log_dict("eval", metrics, iteration)
+                except torch.cuda.OutOfMemoryError as e:
+                    # Hết VRAM lúc eval KHÔNG nên làm chết cả quá trình train
+                    # (đã tốn hàng chục phút huấn luyện) - bỏ qua lần eval
+                    # này, dọn cache, và tiếp tục train bình thường. Nếu lỗi
+                    # này lặp lại nhiều lần, cân nhắc giảm
+                    # dataset.images.resolution hoặc tắt evaluation.use_lpips
+                    # trong config.
+                    self.logger.log_text(
+                        f"[eval @ iter {iteration}] CẢNH BÁO: hết VRAM khi evaluate "
+                        f"(có thể do LPIPS/VGG tốn bộ nhớ) - BỎ QUA lần eval này, "
+                        f"tiếp tục training. Nếu lặp lại nhiều lần, giảm "
+                        f"'dataset.images.resolution' hoặc set 'evaluation.use_lpips: false' "
+                        f"trong config. Chi tiết lỗi: {e}")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
             if iteration % save_interval == 0 or iteration == n_iters:
                 self.save_checkpoint(iteration)

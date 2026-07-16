@@ -25,6 +25,10 @@ dataset:
   type: "colmap"                  # colmap | nerf_transforms
   images:
     directory: "images"
+    # Xem giải thích đầy đủ trong configs/dataset.yaml. -1 = tự cap 1600px
+    # (khuyên dùng trên Kaggle, GPU T4/P100 thường chỉ ~16GB VRAM, ảnh drone
+    # DJI full-res dễ gây CUDA OOM nhất là lúc eval chạy LPIPS/VGG). Nếu vẫn
+    # OOM sau khi cập nhật fix, hạ tiếp xuống N>0 (vd 2 hoặc 4) để giảm thêm.
     resolution: -1
     white_background: false
   cameras:

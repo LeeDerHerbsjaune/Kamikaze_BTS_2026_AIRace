@@ -24,6 +24,44 @@ from utils.camera_utils import Camera, focal2fov
 from utils.config_loader import cfg_get
 
 
+def _apply_resolution(pil_img, resolution):
+    """Resize ảnh theo dataset.images.resolution - config này tồn tại từ đầu
+    nhưng CHƯA TỪNG được dùng ở đâu, khiến ảnh drone gốc (thường 4000x3000+
+    với DJI) luôn được train/eval ở ĐỘ PHÂN GIẢI GỐC. Đây là nguyên nhân
+    chính gây CUDA OOM, đặc biệt khi evaluate_dataset() chạy LPIPS (mạng VGG)
+    trên ảnh full-res mỗi lần eval.
+
+    Quy ước (giống 3DGS gốc để người quen thuộc không bỡ ngỡ):
+      -1        : mặc định AN TOÀN - nếu cạnh dài nhất > 1600px thì tự động
+                  scale xuống còn 1600px (giữ tỉ lệ), ảnh nhỏ hơn giữ nguyên.
+      0         : ép giữ NGUYÊN độ phân giải gốc, không bao giờ scale (cần
+                  VRAM lớn, chỉ dùng khi biết chắc GPU đủ mạnh).
+      N > 0     : chia độ phân giải gốc cho N (vd 2 = giảm còn 1/2 mỗi
+                  chiều, 4 = còn 1/4).
+
+    QUAN TRỌNG: hàm này KHÔNG được áp dụng cho target novel-view cameras
+    (đọc từ target_poses.json) - các pose đó có width/height do đề bài quy
+    định, ảnh render nộp bài phải đúng kích thước yêu cầu, không được co lại.
+    """
+    if resolution == 0:
+        return pil_img
+    w, h = pil_img.size
+    if resolution == -1:
+        max_side = max(w, h)
+        if max_side <= 1600:
+            return pil_img
+        scale = 1600.0 / max_side
+    elif resolution > 0:
+        if resolution == 1:
+            return pil_img
+        scale = 1.0 / resolution
+    else:
+        raise ValueError(f"dataset.images.resolution không hợp lệ: {resolution} "
+                          f"(chỉ nhận -1, 0, hoặc số nguyên dương).")
+    new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
+    return pil_img.resize((new_w, new_h), PILImage.LANCZOS)
+
+
 class BTSDataset:
     def __init__(self, cfg, device="cuda"):
         self.cfg = cfg
@@ -130,6 +168,9 @@ class BTSDataset:
             FoVx = focal2fov(fx, w)
             FoVy = focal2fov(fy, h)
 
+            resolution = cfg_get(self.cfg, "dataset.images.resolution", -1)
+            pil_img = _apply_resolution(pil_img, resolution)
+
             image_tensor = torch.from_numpy(
                 np.array(pil_img)).permute(2, 0, 1).float() / 255.0
 
@@ -212,6 +253,9 @@ class BTSDataset:
 
             FoVx = camera_angle_x if camera_angle_x else focal2fov(frame["fl_x"], w)
             FoVy = focal2fov(fov2focal_from_x(FoVx, w), h) if camera_angle_x else focal2fov(frame["fl_y"], h)
+
+            resolution = cfg_get(self.cfg, "dataset.images.resolution", -1)
+            pil_img = _apply_resolution(pil_img, resolution)
 
             image_tensor = torch.from_numpy(
                 np.array(pil_img)).permute(2, 0, 1).float() / 255.0
