@@ -31,7 +31,7 @@ dataset:
     #     Có thể để đường dẫn TUYỆT ĐỐI nếu file test không nằm trong
     #     dataset.root (vd cấp riêng ngoài dataset train), ví dụ:
     #       file: "/path/to/test_poses.csv"
-    file: "target_poses.json"
+    file: "E:/project/AIRace2026/VAI_NVS_DATA/phase1/private_set1/HCM0254/test/test_poses.csv"
   split:
     mode: "ratio"                 # ratio | llff
     ratio: 0.1

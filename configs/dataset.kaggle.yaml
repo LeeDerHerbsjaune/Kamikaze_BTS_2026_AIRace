@@ -21,7 +21,7 @@
 # chỉ thêm tiền tố /kaggle/input/<slug>/ ở đầu.)
 
 dataset:
-  root: "/kaggle/input/vai-nvs-data-hcm0031"   # <-- SỬA LẠI cho đúng dataset của bạn
+  root: "/kaggle/input/vai-nvs-data-hcm0031/train"   # <-- SỬA LẠI cho đúng dataset của bạn
   type: "colmap"                  # colmap | nerf_transforms
   images:
     directory: "images"

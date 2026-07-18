@@ -36,7 +36,7 @@ dataset:
   pointcloud:
     source: "sparse"
   target_views:
-    file: "target_poses.json"
+    file: "/kaggle/input/vai-nvs-data-hcm0031/test/test_poses.csv"
   split:
     mode: "ratio"
     ratio: 0.1
