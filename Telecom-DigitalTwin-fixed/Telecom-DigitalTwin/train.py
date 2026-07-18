@@ -19,7 +19,7 @@ import torch
 from utils.general_utils import set_seed
 from utils.logger import Logger
 from utils.config_loader import load_config, cfg_get
-from dataloader.dataset.bts_dataset import BTSDataset
+from dataloader.bts_dataset import BTSDataset
 from models.gaussian_model import GaussianModel
 from trainers.trainer import Trainer
 from visualization.viz_utils import plot_camera_trajectory
