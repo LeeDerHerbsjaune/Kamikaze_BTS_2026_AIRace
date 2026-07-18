@@ -1,7 +1,18 @@
 """
 Dataset loader cho scene trạm BTS: đọc ảnh drone RGB (100-300 ảnh/scene) + pose
 (dạng COLMAP hoặc transforms.json kiểu NeRF), chia train/eval, và cung cấp
-danh sách target novel-view poses (20-50 pose) cần render cho vòng inference.
+danh sách target novel-view poses cần render cho vòng inference.
+
+Target novel-view poses hỗ trợ 2 định dạng, tự nhận diện theo đuôi file
+`dataset.target_views.file`:
+  - `.json` : target_poses.json - R (ma trận 3x3) + T + FoVx/FoVy tường minh
+    (xem docstring _load_target_views_json).
+  - `.csv`  : test_poses.csv - pose dạng quaternion + intrinsics tường minh,
+    thường là file test-set do đề bài cấp để render nộp bài (submission)
+    (xem docstring _load_target_views_csv).
+Cả 2 đường đều đi qua CÙNG 1 hàm _append_target_camera() để đảm bảo áp dụng
+đồng nhất normalize_scene() - nếu không target novel views sẽ bị render sai
+vị trí vì lệch hệ toạ độ so với model đã train.
 
 KIẾN TRÚC: phần đọc sparse reconstruction (cameras/images/points3D) qua pycolmap
 được giao cho `dataloader.colmap_loader.ColmapLoader` (đọc thuần, không biết gì
@@ -18,11 +29,12 @@ không đảm nhiệm:
      VÀ camera target (novel views) - nếu không target novel views sẽ bị
      render sai vị trí vì lệch hệ toạ độ so với model đã train.
   4. Chia train/eval theo tỉ lệ config.
-  5. Đọc target novel-view poses (target_poses.json), áp cùng normalize.
+  5. Đọc target novel-view poses (json hoặc csv), áp cùng normalize.
   6. Hỗ trợ song song format `nerf_transforms` (transforms.json), không đi qua
      ColmapLoader/pycolmap.
 """
 import os
+import csv
 import json
 
 import numpy as np
@@ -34,7 +46,7 @@ import pycolmap
 
 from dataloader.entities import Frame, Scene
 from dataloader.colmap import ColmapLoader
-from preprocessing.colmap_utils import normalize_scene
+from preprocessing.colmap_utils import normalize_scene, qvec2rotmat
 from utils.camera_utils import Camera, focal2fov
 from utils.config_loader import cfg_get
 
@@ -353,9 +365,14 @@ class BTSDataset:
 
     # ------------------------------------------------------------------
     def _load_target_views(self):
-        """Đọc 20-50 pose mục tiêu (novel views) mà đề bài yêu cầu sinh ảnh.
-        File json dạng: [{"name": "target_001", "R":[[..]], "T":[..], "FoVx":.., "FoVy":..,
-                          "width":.., "height":..}, ...]
+        """Đọc pose mục tiêu (novel views) mà đề bài yêu cầu sinh ảnh. Tự
+        nhận diện định dạng theo đuôi file của 'dataset.target_views.file':
+          - .json -> _load_target_views_json (R/T/FoVx/FoVy tường minh)
+          - .csv  -> _load_target_views_csv  (quaternion + intrinsics, dùng
+            cho bộ test/submission dạng test_poses.csv)
+        'dataset.target_views.file' có thể là đường dẫn tuyệt đối (vd trỏ ra
+        ngoài dataset.root, khi ban tổ chức phát riêng file test) hoặc tương
+        đối so với dataset.root (giữ tương thích ngược với target_poses.json).
         Không có ảnh ground truth đi kèm (image=None).
 
         Các pose này đến từ đề bài (hệ toạ độ COLMAP gốc), nên phải áp dụng
@@ -363,25 +380,96 @@ class BTSDataset:
         toạ độ camera sai lệch hệ quy chiếu và render ra ảnh sai hoàn toàn.
         """
         target_file = cfg_get(self.cfg, "dataset.target_views.file", "target_poses.json")
-        target_path = os.path.join(self.data_root, target_file)
+        target_path = target_file if os.path.isabs(target_file) else os.path.join(self.data_root, target_file)
         if not os.path.exists(target_path):
             return
+
+        ext = os.path.splitext(target_path)[1].lower()
+        if ext == ".csv":
+            self._load_target_views_csv(target_path)
+        else:
+            self._load_target_views_json(target_path)
+
+    def _load_target_views_json(self, target_path):
+        """Format: [{"name": "target_001", "R":[[..]], "T":[..], "FoVx":.., "FoVy":..,
+                     "width":.., "height":..}, ...]"""
         with open(target_path, encoding="utf-8") as f:
             targets = json.load(f)
 
         for i, t in enumerate(targets):
             R = np.array(t["R"])
             T = np.array(t["T"])
-            if self._norm_scale != 1.0 or np.any(self._norm_center != 0):
-                C = _camera_center(R, T)
-                C_norm = (C - self._norm_center) * self._norm_scale
-                T = -R @ C_norm
-            cam = Camera(uid=f"target_{i}", R=R, T=T,
-                         FoVx=t["FoVx"], FoVy=t["FoVy"],
-                         image=None, image_name=t.get("name", f"target_{i:03d}"),
-                         width=t["width"], height=t["height"],
-                         device=self.device)
-            self.target_cameras.append(cam)
+            name = t.get("name", f"target_{i:03d}")
+            self._append_target_camera(f"target_{i}", R, T, t["FoVx"], t["FoVy"],
+                                        t["width"], t["height"], name)
+
+    def _load_target_views_csv(self, target_path):
+        """Đọc pose test/submission dạng CSV - thường do đề bài cấp riêng để
+        render ảnh nộp bài (submission), thay cho target_poses.json.
+
+        Cột bắt buộc (header):
+            image_name,qw,qx,qy,qz,tx,ty,tz,fx,fy,cx,cy,width,height
+        - (qw,qx,qy,qz): quaternion world->cam, ĐÚNG convention images.txt
+          của COLMAP -> tái dùng qvec2rotmat() để chuyển sang ma trận R (3x3).
+        - (tx,ty,tz): world->cam translation (giống tvec COLMAP, KHÔNG phải
+          vị trí camera trong world - _camera_center() lo phần suy ra vị trí
+          thật khi cần áp normalize_scene).
+        - (fx,fy): tiêu cự PINHOLE, dùng focal2fov() để suy ra FoVx/FoVy theo
+          đúng width/height của từng dòng.
+        - (cx,cy): principal point - renderer hiện tại (utils/camera_utils.py,
+          renderer/gaussian_renderer._fov_to_intrinsics) giả định cx=width/2,
+          cy=height/2 (đúng với dữ liệu test_poses.csv thực tế đã kiểm tra),
+          nên KHÔNG dùng trực tiếp cx/cy ở đây - chỉ đọc để không báo lỗi
+          thiếu cột, không xử lý lệch tâm.
+        image_name giữ tên ảnh gốc (có đuôi, vd '.JPG'); tên dùng để đặt tên
+        camera (và do đó tên file .png render ra) được BỎ ĐUÔI, để khớp đúng
+        tên ảnh test khi đóng gói nộp bài (vd 'DJI_..._V.JPG' -> ảnh render
+        lưu ra 'DJI_..._V.png').
+        """
+        required = {"image_name", "qw", "qx", "qy", "qz", "tx", "ty", "tz",
+                    "fx", "fy", "cx", "cy", "width", "height"}
+        with open(target_path, encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            missing_cols = required - set(reader.fieldnames or [])
+            if missing_cols:
+                raise KeyError(
+                    f"CSV target views '{target_path}' thiếu cột bắt buộc: "
+                    f"{sorted(missing_cols)}. Cột tìm thấy: {reader.fieldnames}")
+
+            n_rows = 0
+            for i, row in enumerate(reader):
+                qvec = np.array([float(row["qw"]), float(row["qx"]),
+                                  float(row["qy"]), float(row["qz"])])
+                R = qvec2rotmat(qvec)
+                T = np.array([float(row["tx"]), float(row["ty"]), float(row["tz"])])
+
+                width = int(float(row["width"]))
+                height = int(float(row["height"]))
+                FoVx = focal2fov(float(row["fx"]), width)
+                FoVy = focal2fov(float(row["fy"]), height)
+
+                raw_name = row["image_name"].strip()
+                name = os.path.splitext(raw_name)[0]
+
+                self._append_target_camera(f"target_{i}", R, T, FoVx, FoVy,
+                                            width, height, name)
+                n_rows += 1
+
+        print(f"[BTSDataset] Đã load {n_rows} target view(s) từ CSV '{target_path}' "
+              f"(dùng cho render nộp bài / submission).")
+
+    def _append_target_camera(self, uid, R, T, FoVx, FoVy, width, height, name):
+        """Áp normalize_scene (nếu bật) rồi tạo Camera - dùng chung cho cả 2
+        nguồn target views (json/csv) để tránh lặp logic normalize (và tránh
+        bug lệch hệ toạ độ nếu chỉ sửa 1 trong 2 nhánh sau này)."""
+        if self._norm_scale != 1.0 or np.any(self._norm_center != 0):
+            C = _camera_center(R, T)
+            C_norm = (C - self._norm_center) * self._norm_scale
+            T = -R @ C_norm
+        cam = Camera(uid=uid, R=R, T=T, FoVx=FoVx, FoVy=FoVy,
+                     image=None, image_name=name,
+                     width=width, height=height, device=self.device)
+        self.target_cameras.append(cam)
 
 
 def _camera_center(R, T):

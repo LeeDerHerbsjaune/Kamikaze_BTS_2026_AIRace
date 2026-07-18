@@ -3,7 +3,7 @@ train.py - Entry point chính, nối đúng workflow:
 
 Competition Dataset -> configs/default.yaml -> train.py
     -> Load Config / Init Logger / Set Seed
-    -> Build Dataset -> Preprocessing -> Build Gaussian Model
+    -> (Build Dataset  -> Preprocessing) aka dataloader -> Build Gaussian Model
     -> Build Renderer -> Build Loss -> Build Optimizer -> Trainer
     -> Training Loop -> Validation -> Save Checkpoint
     -> Inference -> Novel View Images

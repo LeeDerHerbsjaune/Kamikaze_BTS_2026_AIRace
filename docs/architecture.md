@@ -2,9 +2,7 @@ Telecom-DigitalTwin/
 │
 ├── configs/
 │
-├── datasets/
-│
-├── preprocessing/
+├── dataloader/
 │
 ├── models/
 │

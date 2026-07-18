@@ -6,7 +6,7 @@ import cv2
 import torch
 
 import pycolmap
-from dataloader.entities import Image, Camera, Point3D, Frame, Scene
+from dataloader.dataset.entities import Image, Camera, Point3D, Frame, Scene
 
 _CAMERA_PARAM_LAYOUT = {
     "SIMPLE_PINHOLE": ("f", "cx", "cy"),

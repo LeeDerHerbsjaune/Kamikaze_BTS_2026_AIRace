@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image as PILImage
 import torch
 
-from preprocessing.colmap_utils import (
+from dataloader.preprocessing.colmap_utils import (
     load_colmap_scene, get_scene_pointcloud, qvec2rotmat, run_colmap_pipeline
 )
 from utils.camera_utils import Camera, focal2fov

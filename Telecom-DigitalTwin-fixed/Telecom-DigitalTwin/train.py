@@ -103,6 +103,10 @@ def main():
     logger.log_text("Huấn luyện hoàn tất.")
 
     # ---------- Inference -> Novel View Images ----------
+    # dataset.target_cameras đã được BTSDataset load sẵn từ đầu (hỗ trợ cả
+    # target_poses.json lẫn test_poses.csv dạng submission, xem
+    # dataloader/bts_dataset.py._load_target_views) nên không cần load lại gì
+    # thêm ở đây - chỉ việc render bằng gaussians vừa train xong.
     logger.log_text("Bắt đầu render novel views mục tiêu...")
     cfg["inference"]["checkpoint"] = os.path.join(cfg["training"]["checkpoint_dir"], "last.pth")
     run_inference_from_cfg(cfg, gaussians, dataset, logger)
@@ -114,7 +118,7 @@ def run_inference_from_cfg(cfg, gaussians, dataset, logger):
     """Render trực tiếp bằng model vừa train xong (không cần load lại checkpoint từ disk)."""
     import torch
     from renderer.gaussian_renderer import render
-    from inference.render_novel_views import tensor_to_pil, _save_video
+    from inference.render_novel_views import tensor_to_pil, _save_video, _maybe_zip_submission
 
     if not dataset.target_cameras:
         logger.log_text("Không có target novel views (dataset.target_views.file rỗng/không tồn tại) - bỏ qua bước inference.")
@@ -140,6 +144,8 @@ def run_inference_from_cfg(cfg, gaussians, dataset, logger):
     logger.log_text(f"Đã render {len(dataset.target_cameras)} novel view images vào {out_dir}")
     if render_video and frames:
         _save_video([np.array(f) for f in frames], os.path.join(out_dir, "novel_views.mp4"), fps)
+
+    _maybe_zip_submission(out_dir, cfg)
 
 
 if __name__ == "__main__":

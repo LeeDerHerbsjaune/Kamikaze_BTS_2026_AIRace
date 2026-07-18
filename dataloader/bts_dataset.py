@@ -32,9 +32,9 @@ from PIL import Image as PILImage
 
 import pycolmap
 
-from dataloader.entities import Frame, Scene
-from dataloader.colmap import ColmapLoader
-from preprocessing.colmap_utils import normalize_scene
+from dataloader.dataset.entities import Frame, Scene
+from dataloader.dataset.colmap import ColmapLoader
+from dataloader.preprocessing.colmap_utils import normalize_scene
 from utils.camera_utils import Camera, focal2fov
 from utils.config_loader import cfg_get
 

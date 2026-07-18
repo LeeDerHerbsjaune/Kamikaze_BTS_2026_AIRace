@@ -154,9 +154,10 @@ class Trainer:
                     self.reset_opacity()
 
             if iteration % log_interval == 0:
-                pbar.set_postfix(loss=loss.item(), n_gaussians=self.gaussians.xyz.shape[0])
+                n_gaussians=self.gaussians.xyz.shape[0]
+                pbar.set_postfix(loss=loss.item(), n_gaussians = n_gaussians)
                 self.logger.log_scalar("train/loss", loss.item(), iteration)
-                self.logger.log_scalar("train/n_gaussians", self.gaussians.xyz.shape[0], iteration)
+                self.logger.log_scalar("train/n_gaussians", n_gaussians, iteration)
 
             if iteration % eval_interval == 0 and self.dataset.eval_cameras:
                 metrics = evaluate_dataset(self.dataset.eval_cameras, self.gaussians,

@@ -9,6 +9,13 @@ inference:
   output:
     directory: "./outputs/bts_scene_01/novel_views"
 
+    # Đóng gói toàn bộ ảnh .png render ra thành 1 file .zip (cùng cấp với
+    # `directory` ở trên) sau khi render xong - tiện nộp bài (submission)
+    # trực tiếp mà không cần tự zip tay. Mặc định false (không đổi hành vi
+    # cũ). Chỉ có tác dụng khi inference.render.images: true.
+    zip: false
+    zip_name: "submission.zip"
+
   render:
 
     images: true

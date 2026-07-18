@@ -1,5 +1,5 @@
 # ==========================================================
-# Training Configuration
+# Training Configuration and optimization hyperparameters
 # ==========================================================
 
 training:

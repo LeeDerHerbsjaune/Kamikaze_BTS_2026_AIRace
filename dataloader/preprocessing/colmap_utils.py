@@ -46,8 +46,8 @@ def run_colmap_pipeline(image_dir: str, workspace_dir: str, colmap_exe: str = "c
             f"  1) Nếu bạn ĐÃ có sẵn pose (COLMAP hoặc transforms.json): kiểm tra lại "
             f"'dataset.root' trong configs/dataset.yaml có trỏ đúng thư mục chứa "
             f"'sparse/0/cameras.txt, images.txt, points3D.txt' hay chưa.\n"
-            f"  2) Nếu bạn CHƯA có pose và muốn tự động chạy SfM: cài COLMAP "
-            f"(https://colmap.github.io/install.html), thêm vào PATH, hoặc sửa "
+            f"  2) Nếu bạn CHƯA có pose và muốn tự động chạy SfM: cài COLMAP"
+            f"(https://colmap.github.io/install.html), thêm vào PATH, hoặc sửa"
             f"'preprocessing.colmap.executable' trong configs/dataset.yaml trỏ thẳng tới "
             f"file .exe của COLMAP.")
 
