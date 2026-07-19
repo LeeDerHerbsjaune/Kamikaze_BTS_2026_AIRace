@@ -22,7 +22,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from models.gaussian_model import GaussianModel
-from dataloader.dataset.bts_dataset import BTSDataset
+from dataloader.bts_dataset import BTSDataset
 from renderer.gaussian_renderer import render
 from utils.config_loader import load_config, cfg_get
 
