@@ -19,22 +19,23 @@ _CAMERA_PARAM_LAYOUT = {
 
 
 class ColmapLoader:
-    """Load sparse reconstruction (cameras, images, points3D) từ COLMAP qua pycolmap,
-    và ghép lại thành 1 Scene hoàn chỉnh sẵn sàng đưa cho Trainer."""
+    """Loads a sparse reconstruction (cameras, images, points3D) from COLMAP
+    via pycolmap, and assembles it into one complete Scene ready to hand off
+    to the Trainer."""
 
     def __init__(self, sparse_path: str, images_dir: str):
         if not os.path.isdir(sparse_path):
-            raise FileNotFoundError(f"Không tìm thấy thư mục sparse reconstruction: {sparse_path}")
+            raise FileNotFoundError(f"Sparse reconstruction directory not found: {sparse_path}")
         if not os.path.isdir(images_dir):
-            raise FileNotFoundError(f"Không tìm thấy thư mục ảnh: {images_dir}")
+            raise FileNotFoundError(f"Images directory not found: {images_dir}")
 
         self.images_dir = images_dir
-        self.reconstruction = pycolmap.Reconstruction(sparse_path) # hàm đọc các tệp .bin hoặc .txt 
+        self.reconstruction = pycolmap.Reconstruction(sparse_path)  # reads the .bin or .txt files
 
         if len(self.reconstruction.cameras) == 0:
-            raise ValueError(f"Reconstruction tại {sparse_path} không có camera nào.")
+            raise ValueError(f"Reconstruction at {sparse_path} has no cameras.")
         if len(self.reconstruction.images) == 0:
-            raise ValueError(f"Reconstruction tại {sparse_path} không có image nào.")
+            raise ValueError(f"Reconstruction at {sparse_path} has no images.")
 
     # ------------------------------------------------------------------
     def load_cameras(self) -> dict[int, Camera]:
@@ -55,7 +56,7 @@ class ColmapLoader:
         layout = _CAMERA_PARAM_LAYOUT.get(model_name)
         if layout is None:
             raise NotImplementedError(
-                f"Camera model '{model_name}' chưa được hỗ trợ. Bổ sung vào _CAMERA_PARAM_LAYOUT.")
+                f"Camera model '{model_name}' is not supported yet. Add it to _CAMERA_PARAM_LAYOUT.")
         if "fx" in layout and "fy" in layout:
             fx, fy = params[layout.index("fx")], params[layout.index("fy")]
         else:
@@ -66,7 +67,7 @@ class ColmapLoader:
 
     # ------------------------------------------------------------------
     def load_images(self) -> dict[int, Image]:
-        """Chỉ đọc metadata + pose, KHÔNG đụng tới file ảnh trên đĩa."""
+        """Reads metadata + pose only, does NOT touch any image files on disk."""
         images = {}
         for image_id, colmap_image in self.reconstruction.images.items():
             R, t = self._extract_pose(colmap_image)
@@ -80,14 +81,23 @@ class ColmapLoader:
 
     @staticmethod
     def _extract_pose(colmap_image):
-        """Tương thích cả API pycolmap cũ và mới, chỉ trả về (R, t)."""
+        """Compatible with both the old pycolmap API (cam_from_world is a
+        PROPERTY, returns a Rigid3d directly) and the new one
+        (pycolmap>=3.x: cam_from_world is a METHOD, must be called `()` to
+        get a Rigid3d - verified against pycolmap 4.1.0 in practice).
+        hasattr() can't tell these two cases apart (a bound method still
+        satisfies hasattr), so we must check callable() and call it if
+        needed, to avoid the bug where a
+        'builtin_function_or_method' object has no attribute 'rotation'."""
         if hasattr(colmap_image, "cam_from_world"):
-            pose = colmap_image.cam_from_world()
+            pose = colmap_image.cam_from_world
+            if callable(pose):
+                pose = pose()
             return pose.rotation.matrix(), pose.translation
         if hasattr(colmap_image, "R") and hasattr(colmap_image, "t"):
             return colmap_image.R, colmap_image.t
         raise AttributeError(
-            "Không tìm thấy pose (cam_from_world hoặc R/t) - kiểm tra version pycolmap.")
+            "Could not find a pose (cam_from_world or R/t) - check your pycolmap version.")
 
     # ------------------------------------------------------------------
     def load_points3D(self, min_track_length: int = 3,
@@ -105,27 +115,30 @@ class ColmapLoader:
             points3D[point3D_id] = Point3D(id=point3D_id, xyz=point3D.xyz, color=point3D.color)
 
         if n_skipped:
-            print(f"[ColmapLoader] Đã lọc bỏ {n_skipped}/{len(self.reconstruction.points3D)} điểm nhiễu.")
+            print(f"[ColmapLoader] Filtered out {n_skipped}/{len(self.reconstruction.points3D)} noisy points.")
         return points3D
 
     # ------------------------------------------------------------------
     def _read_image_tensor(self, image_name: str) -> torch.Tensor:
-        """Đọc 1 file ảnh từ đĩa -> tensor (3,H,W) float [0,1]. Tách riêng để
-        BTSDataset có thể override (vd lazy-load / cache) mà không đụng loader."""
+        """Reads one image file from disk -> (3,H,W) float [0,1] tensor.
+        Kept as a separate method so BTSDataset can override it (e.g. for
+        lazy-loading / caching) without touching the loader itself."""
         image_path = os.path.join(self.images_dir, image_name)
         rgb = cv2.imread(image_path)
         if rgb is None:
-            raise FileNotFoundError(f"Không đọc được ảnh: {image_path}")
+            raise FileNotFoundError(f"Failed to read image: {image_path}")
         rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
         tensor = torch.from_numpy(rgb).float() / 255.0
         return tensor.permute(2, 0, 1)
 
     def load_scene(self, min_track_length: int = 3, max_error: Optional[float] = 2.0) -> Scene:
-        """Bước ghép cuối cùng: Camera + Image (pose) + pixel thật trên đĩa -> Frame,
-        rồi gói tất cả (cameras, frames, point_cloud) thành 1 Scene trả về Trainer.
+        """Final assembly step: Camera + Image (pose) + real pixels on disk
+        -> Frame, then bundles everything (cameras, frames, point_cloud)
+        into one Scene returned to the Trainer.
 
-        Đây là entry point chính nên gọi từ bên ngoài, thay vì gọi rời từng
-        load_cameras()/load_images()/load_points3D() rồi tự ghép tay.
+        This is the main entry point to call from outside - prefer it over
+        calling load_cameras()/load_images()/load_points3D() separately and
+        assembling them by hand.
         """
         cameras = self.load_cameras()
         images = self.load_images()
@@ -133,7 +146,13 @@ class ColmapLoader:
 
         frames = []
         n_missing = 0
-        for image in images.values():
+        # Sort by image name: dict.values() does not guarantee a stable
+        # order across runs/machines - without sorting, the train/eval split
+        # (index-based) would not be reproducible even with the same seed.
+        # BTSDataset (the main caller) uses a tolerant subclass that
+        # overrides load_scene() with its own sort, but we sort here too so
+        # ColmapLoader still behaves correctly when used standalone.
+        for image in sorted(images.values(), key=lambda im: im.name):
             camera = cameras.get(image.camera_id)
             if camera is None:
                 n_missing += 1
@@ -148,6 +167,6 @@ class ColmapLoader:
             ))
 
         if n_missing:
-            print(f"[ColmapLoader] Bỏ qua {n_missing} ảnh do không tìm thấy camera_id tương ứng.")
+            print(f"[ColmapLoader] Skipped {n_missing} images with no matching camera_id.")
 
         return Scene(cameras=cameras, frames=frames, point_cloud=point_cloud)

@@ -22,18 +22,20 @@ dataset:
   root: "/kaggle/input/<tên-slug-dataset>/train"   # <-- sửa dòng này
 ```
 
-Nếu dataset của bạn KHÔNG có sẵn `sparse/0` (chỉ có ảnh thô + cần tự chạy
-COLMAP) — Kaggle **không hỗ trợ** tự chạy COLMAP CLI theo cách repo này
-thiết kế (vì `/kaggle/input` read-only và COLMAP không có sẵn trên image
-Kaggle mặc định). Cách xử lý: chạy COLMAP cục bộ trên máy bạn trước, hoặc
-cài COLMAP qua `apt-get` trong notebook rồi tự copy sparse reconstruction
-ra `/kaggle/working/` và trỏ `dataset.root` vào đó thay vì `/kaggle/input`.
+Nếu dataset của bạn KHÔNG có sẵn `sparse/0` (chỉ có ảnh thô, chưa có pose),
+bật `preprocessing.colmap.enabled: true` trong `configs/dataset.kaggle.yaml`
+— pipeline sẽ tự chạy SfM qua thư viện `pycolmap` (pure Python, cài bằng
+`pip install pycolmap`), **không cần cài COLMAP CLI/binary** như trước, nên
+chạy tốt trên Kaggle dù `/kaggle/input` chỉ đọc được. Lưu ý: SfM (đặc biệt
+`incremental_mapping`) khá tốn thời gian/CPU với vài trăm ảnh - cân nhắc chạy
+trước và lưu sẵn `sparse/0` vào dataset Kaggle của bạn nếu muốn tiết kiệm
+thời gian mỗi lần chạy notebook.
 
 ## 3. Cài dependency còn thiếu
 
 Image Kaggle GPU đã có sẵn torch/numpy/pillow/opencv. Cần cài thêm:
 ```python
-!pip install -q gsplat lpips plyfile imageio imageio-ffmpeg
+!pip install -q gsplat lpips plyfile imageio imageio-ffmpeg pycolmap
 ```
 
 ## 4. Chạy training
@@ -48,7 +50,10 @@ Toàn bộ checkpoint / log / novel views sẽ được ghi vào
 `/kaggle/working/outputs/bts_scene_01/` (do `output_root` trong
 `configs/default.kaggle.yaml` đã trỏ sẵn về đây) — đây là thư mục duy nhất
 Kaggle cho phép ghi và cũng là nơi bạn tải kết quả về sau khi chạy xong
-(qua tab "Output" của notebook).
+(qua tab "Output" của notebook). Mở `notes.md` trong thư mục này để xem
+nhanh tổng kết (checkpoint nào ứng với PSNR bao nhiêu, đã render bao nhiêu
+novel view...) mà không cần đọc lại toàn bộ `train.log` — hữu ích nhất nếu
+phiên Kaggle bị ngắt giữa chừng và bạn cần biết đã chạy tới đâu.
 
 ## 5. Giới hạn cần lưu ý trên Kaggle
 

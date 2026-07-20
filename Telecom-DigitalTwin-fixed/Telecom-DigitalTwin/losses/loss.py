@@ -1,14 +1,19 @@
 """
-Loss function cho training 3DGS: kết hợp L1 (robust với noise) và SSIM
-(giữ cấu trúc/structure của ảnh, quan trọng cho chi tiết thiết bị nhỏ trên trạm BTS
-như anten, dây cáp, giá đỡ).
+Loss function for 3DGS training: combines L1 (robust to noise) and SSIM
+(preserves image structure - important for fine BTS equipment detail such as
+antennas, cables, mounting brackets).
 
 total_loss = l1_weight * L1 + dssim_weight * (1 - SSIM)
 
-lambda_dssim truyền vào compute_loss() lấy từ configs/loss.yaml: loss.dssim.weight
-(loss.l1.weight cũng có trong config nhưng công thức gốc 3DGS chỉ dùng 1 hệ số
-lambda_dssim và ngầm định l1_weight = 1 - lambda_dssim; nếu muốn 2 trọng số độc
-lập, dùng compute_loss_weighted() bên dưới).
+lambda_dssim passed into compute_loss() comes from configs/loss.yaml:
+loss.dssim.weight (loss.l1.weight is also in the config, but the original
+3DGS formula only uses a single lambda_dssim and implicitly assumes
+l1_weight = 1 - lambda_dssim; if you want 2 independent weights, use
+compute_loss_weighted() below).
+
+The ssim()/gaussian window implementation matches the standard formula used
+in utils/loss_utils.py of graphdeco-inria/gaussian-splatting (window_size=11,
+sigma=1.5, C1=0.01**2, C2=0.03**2).
 """
 import torch
 import torch.nn.functional as F
@@ -32,7 +37,7 @@ def _create_window(window_size, channel):
 
 
 def ssim(img1, img2, window_size=11):
-    """img1, img2: (B or none,3,H,W) hoặc (3,H,W), giá trị trong [0,1]."""
+    """img1, img2: (B or none,3,H,W) or (3,H,W), values in [0,1]."""
     if img1.dim() == 3:
         img1 = img1.unsqueeze(0)
         img2 = img2.unsqueeze(0)
@@ -54,7 +59,7 @@ def ssim(img1, img2, window_size=11):
 
 
 def compute_loss(rendered, gt, lambda_dssim=0.2):
-    """Công thức chuẩn 3DGS gốc: total = (1-lambda)*L1 + lambda*(1-SSIM)."""
+    """Standard 3DGS formula: total = (1-lambda)*L1 + lambda*(1-SSIM)."""
     l1 = l1_loss(rendered, gt)
     s = ssim(rendered, gt)
     total = (1.0 - lambda_dssim) * l1 + lambda_dssim * (1.0 - s)
@@ -62,8 +67,9 @@ def compute_loss(rendered, gt, lambda_dssim=0.2):
 
 
 def compute_loss_weighted(rendered, gt, l1_weight=0.8, dssim_weight=0.2):
-    """Biến thể dùng đúng 2 trọng số độc lập loss.l1.weight / loss.dssim.weight
-    trong configs/loss.yaml, thay vì giả định chúng luôn cộng lại bằng 1."""
+    """Variant using the two independent weights loss.l1.weight /
+    loss.dssim.weight from configs/loss.yaml, instead of assuming they
+    always sum to 1."""
     l1 = l1_loss(rendered, gt)
     s = ssim(rendered, gt)
     total = l1_weight * l1 + dssim_weight * (1.0 - s)

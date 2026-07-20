@@ -1,22 +1,25 @@
 """
-Entity dùng chung cho pipeline load dữ liệu scene BTS (dataloader/colmap_loader.py
+Shared entities for the BTS scene data-loading pipeline (dataloader/colmap.py
 + dataloader/bts_dataset.py).
 
-Phân tầng:
-  Camera   - intrinsics thuần (1 Camera COLMAP có thể được nhiều Image dùng chung).
-  Image    - metadata + pose THÔ (world->cam) đọc thẳng từ COLMAP, CHƯA normalize,
-             CHƯA có pixel data.
-  Point3D  - 1 điểm trong sparse point cloud.
-  Frame    - 1 camera view HOÀN CHỈNH: pose + intrinsics (qua `camera`) + ảnh thật
-             (`image=None` cho phép dùng lại Frame cho target/novel-view chưa có
-             ground-truth, dù ColmapLoader hiện luôn gán ảnh thật).
-  Scene    - gói cameras + frames + point_cloud của 1 scene, trả về từ
-             ColmapLoader.load_scene().
+Layers:
+  Camera   - pure intrinsics (one COLMAP Camera can be shared by many Images).
+  Image    - metadata + RAW pose (world->cam) read straight from COLMAP, NOT
+             yet normalized, with NO pixel data.
+  Point3D  - one point in the sparse point cloud.
+  Frame    - one COMPLETE camera view: pose + intrinsics (via `camera`) +
+             the actual image (`image=None` allows reusing Frame for a
+             target/novel view with no ground truth, even though ColmapLoader
+             currently always fills in a real image).
+  Scene    - bundles cameras + frames + point_cloud for one scene, returned
+             by ColmapLoader.load_scene().
 
-Cố tình KHÔNG đưa FoVx/FoVy vào đây: FoV là khái niệm riêng của renderer (tính
-từ fx/fy + width/height qua utils.camera_utils.focal2fov), không phải thuộc
-tính nội tại của intrinsics COLMAP - việc tính FoV thuộc về lớp tiêu thụ
-(dataloader/bts_dataset.py), giữ entities.py độc lập với training convention.
+FoVx/FoVy are deliberately NOT included here: FoV is a renderer-specific
+concept (computed from fx/fy + width/height via
+utils.camera_utils.focal2fov), not an intrinsic property of COLMAP
+intrinsics - computing FoV is the consumer's responsibility
+(dataloader/bts_dataset.py), keeping entities.py independent of any
+training convention.
 """
 from dataclasses import dataclass
 from typing import Optional, Dict, List
@@ -27,7 +30,7 @@ import torch
 
 @dataclass
 class Camera:
-    """Intrinsics của 1 camera COLMAP."""
+    """Intrinsics of one COLMAP camera."""
     id: int
     model: str
     width: int
@@ -40,7 +43,7 @@ class Camera:
 
 @dataclass
 class Image:
-    """Metadata + pose thô (world->cam) của 1 ảnh, đọc thẳng từ COLMAP."""
+    """Metadata + raw pose (world->cam) of one image, read straight from COLMAP."""
     id: int
     name: str
     camera_id: int
@@ -48,7 +51,7 @@ class Image:
     t: np.ndarray    # (3,)  world->cam translation
 
     def camera_center(self) -> np.ndarray:
-        """Vị trí camera trong world coords: C = -R^T @ t."""
+        """Camera position in world coords: C = -R^T @ t."""
         return -self.R.T @ self.t
 
 
@@ -61,9 +64,10 @@ class Point3D:
 
 @dataclass
 class Frame:
-    """1 camera view hoàn chỉnh: pose (R, t) + camera intrinsics + ảnh thật.
-    `image=None` được cho phép để tái dùng Frame cho target/novel-view (không có
-    ground-truth), dù luồng ColmapLoader hiện tại luôn điền ảnh thật."""
+    """One complete camera view: pose (R, t) + camera intrinsics + the real
+    image. `image=None` is allowed so Frame can be reused for a target/novel
+    view (no ground truth), even though the current ColmapLoader flow always
+    fills in a real image."""
     camera: Camera
     R: np.ndarray
     t: np.ndarray

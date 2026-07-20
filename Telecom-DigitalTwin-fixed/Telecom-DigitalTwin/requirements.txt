@@ -3,6 +3,7 @@ torchvision
 numpy
 pillow
 opencv-python
+pycolmap
 tqdm
 pyyaml
 plyfile
@@ -12,6 +13,5 @@ imageio
 imageio-ffmpeg
 tensorboard
 gsplat
-pycolmap
 # tuỳ chọn nếu dùng backend gốc thay vì gsplat:
 # git+https://github.com/graphdeco-inria/diff-gaussian-rasterization.git

@@ -1,11 +1,19 @@
 """
-Renderer: wrap thư viện rasterization khả vi cho 3D Gaussian Splatting.
-Mặc định dùng `gsplat` (pip install gsplat) - nhẹ và dễ cài hơn CUDA extension
-gốc `diff-gaussian-rasterization`. Có thể đổi backend qua config
-(renderer.backend: "gsplat" | "diff_gaussian_rasterization").
+Renderer: wraps a differentiable rasterizer for 3D Gaussian Splatting.
+Defaults to `gsplat` (pip install gsplat) - lighter and easier to build than
+the original CUDA extension `diff-gaussian-rasterization`. Backend is
+selectable via config (renderer.backend: "gsplat" | "diff_gaussian_rasterization").
 
-Trả về: ảnh render (3,H,W), radii (dùng để prune theo screen size), và
-viewspace_points (giữ gradient để tính stats densification).
+Cross-checked against the reference render() in
+graphdeco-inria/gaussian-splatting/gaussian_renderer/__init__.py:
+- SH -> RGB conversion formula `clamp_min(sh2rgb + 0.5, 0.0)` matches exactly
+  (reference applies this in its Python `convert_SHs_python` path via eval_sh).
+- The screenspace_points / retain_grad() pattern for capturing 2D gradients
+  for densification matches the reference's own zero-tensor + retain_grad()
+  trick (see _render_diffgs below).
+
+Returns: rendered image (3,H,W), radii (used to prune by screen size), and
+viewspace_points (keeps gradient, used for densification stats).
 """
 import torch
 import math
@@ -15,14 +23,14 @@ def render(camera, gaussians, bg_color, backend="gsplat", scaling_modifier=1.0):
     """
     camera: Camera object (utils/camera_utils.py)
     gaussians: GaussianModel
-    bg_color: (3,) tensor, màu nền
+    bg_color: (3,) tensor, background color
     """
     if backend == "gsplat":
         return _render_gsplat(camera, gaussians, bg_color, scaling_modifier)
     elif backend == "diff_gaussian_rasterization":
         return _render_diffgs(camera, gaussians, bg_color, scaling_modifier)
     else:
-        raise ValueError(f"Renderer backend không hỗ trợ: {backend}")
+        raise ValueError(f"Unsupported renderer backend: {backend}")
 
 
 def _render_gsplat(camera, gaussians, bg_color, scaling_modifier):
@@ -33,19 +41,22 @@ def _render_gsplat(camera, gaussians, bg_color, scaling_modifier):
     quats = gaussians.rotation
     opacities = gaussians.opacity.squeeze(-1)
 
-    # SH -> màu view-dependent, evaluate theo hướng nhìn từ camera_center
+    # SH -> view-dependent color, evaluated along the direction from
+    # camera_center to each Gaussian (same convention as the reference's
+    # `dir_pp_normalized = (get_xyz - camera_center)` in the Python SH path).
     viewdirs = torch.nn.functional.normalize(
         means3d - camera.camera_center, dim=-1)
     colors = gsplat.spherical_harmonics(
         gaussians.active_sh_degree, viewdirs, gaussians.features)
     colors = torch.clamp_min(colors + 0.5, 0.0)
 
-    # camera.world_view_transform (utils/camera_utils.py) đã là ma trận
-    # world->cam CHUYỂN VỊ 1 lần theo convention của diff-gaussian-rasterization
-    # gốc (row-vector). gsplat.rasterization() lại cần viewmat dạng world->cam
-    # thông thường (column-vector, KHÔNG transpose) -> transpose lại 1 lần nữa
-    # ở đây để "huỷ" transpose trước đó và trả về đúng convention gsplat cần.
-    # Nếu đổi/viết lại Camera trong utils/camera_utils.py, kiểm tra lại dòng này.
+    # camera.world_view_transform (utils/camera_utils.py) is already the
+    # world->cam matrix TRANSPOSED once, following the row-vector convention
+    # used by the original diff-gaussian-rasterization extension.
+    # gsplat.rasterization() instead expects a plain world->cam matrix
+    # (column-vector convention, NOT transposed) - so we transpose it back
+    # once here to undo the earlier transpose and match gsplat's convention.
+    # If Camera in utils/camera_utils.py is ever rewritten, re-check this line.
     viewmat = camera.world_view_transform.transpose(0, 1)
     K = _fov_to_intrinsics(camera)
 
@@ -69,12 +80,14 @@ def _render_gsplat(camera, gaussians, bg_color, scaling_modifier):
     means2d = meta.get("means2d")
     if isinstance(means2d, torch.Tensor):
         viewspace_points = means2d[0]
-        # QUAN TRỌNG: means2d là tensor trung gian trong đồ thị tính toán của
-        # gsplat, KHÔNG phải leaf tensor -> .grad sẽ luôn là None sau
-        # loss.backward() nếu không gọi retain_grad() tường minh ở đây. Thiếu
-        # dòng này khiến Trainer.add_densification_stats() không bao giờ chạy
-        # (out["viewspace_points"].grad luôn None), vô hiệu hoá hoàn toàn
-        # densify/clone/split dù config có bật densify.enabled=true.
+        # IMPORTANT: means2d is an intermediate tensor in gsplat's computation
+        # graph, NOT a leaf tensor - .grad would stay None after
+        # loss.backward() unless retain_grad() is called explicitly here.
+        # Missing this line silently breaks Trainer.add_densification_stats()
+        # (out["viewspace_points"].grad always None), disabling densify/
+        # clone/split entirely even with densify.enabled=true. Same pattern
+        # as the reference's own `screenspace_points.retain_grad()` in
+        # gaussian_renderer/__init__.py - see module docstring above.
         if viewspace_points.requires_grad and not viewspace_points.is_leaf:
             viewspace_points.retain_grad()
     else:
@@ -91,13 +104,18 @@ def _render_gsplat(camera, gaussians, bg_color, scaling_modifier):
 
 
 def _render_diffgs(camera, gaussians, bg_color, scaling_modifier):
-    """Backend thay thế dùng CUDA extension gốc của 3DGS (Kerbl et al. 2023),
-    giữ nguyên nếu team đã có sẵn extension build được trên máy huấn luyện."""
+    """Alternative backend using the original CUDA extension from 3DGS
+    (Kerbl et al. 2023), kept for teams that already have the extension
+    built on their training machine."""
     from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
     tanfovx = math.tan(camera.FoVx * 0.5)
     tanfovy = math.tan(camera.FoVy * 0.5)
 
+    # Same zero-tensor + retain_grad() trick as the reference implementation
+    # (`screenspace_points = torch.zeros_like(pc.get_xyz, ...) + 0`) to make
+    # PyTorch return gradients of the 2D (screen-space) means, used later for
+    # densification statistics.
     screenspace_points = torch.zeros_like(gaussians.xyz, requires_grad=True, device=gaussians.device)
     screenspace_points.retain_grad()
 

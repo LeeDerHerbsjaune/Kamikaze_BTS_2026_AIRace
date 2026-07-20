@@ -21,17 +21,7 @@ dataset:
   pointcloud:
     source: "sparse"
   target_views:
-    # File chứa pose các novel-view cần render (không có ảnh ground truth).
-    # Hỗ trợ 2 định dạng, tự nhận diện theo đuôi file (xem
-    # dataloader/bts_dataset.py._load_target_views):
-    #   - "target_poses.json" : R (ma trận 3x3) + T + FoVx/FoVy tường minh.
-    #   - "test_poses.csv"    : pose dạng quaternion (qw,qx,qy,qz) + tvec
-    #     (tx,ty,tz) + intrinsics tường minh (fx,fy,cx,cy,width,height) - dùng
-    #     khi ban tổ chức cấp riêng bộ test để render nộp bài (submission).
-    #     Có thể để đường dẫn TUYỆT ĐỐI nếu file test không nằm trong
-    #     dataset.root (vd cấp riêng ngoài dataset train), ví dụ:
-    #       file: "/path/to/test_poses.csv"
-    file: "E:/project/AIRace2026/VAI_NVS_DATA/phase1/private_set1/HCM0254/test/test_poses.csv"
+    file: "target_poses.json"
   split:
     mode: "ratio"                 # ratio | llff
     ratio: 0.1
@@ -42,8 +32,21 @@ preprocessing:
     method: "sparse"              # sparse | random
     random_points: 100000
   colmap:
+    # Nếu true, tự chạy SfM bằng pycolmap (extract_features -> match_exhaustive
+    # -> incremental_mapping) khi chưa có sẵn sparse/0 - chỉ cần `pip install
+    # pycolmap`, KHÔNG cần cài đặt COLMAP CLI riêng.
     enabled: false
-    executable: "colmap"
+    # Nơi ghi output SfM (database.db, sparse/). Để trống (null) = ghi vào
+    # chính dataset.root (mặc định, đúng cho local nếu dataset.root ghi được).
+    # Set giá trị khác nếu dataset.root chỉ đọc được (vd Kaggle input dataset)
+    # - xem configs/dataset.kaggle.yaml.
+    workspace: null
     camera_model: "PINHOLE"
+  pointcloud:
+    # Lọc điểm nhiễu khi đọc points3D từ sparse reconstruction (áp dụng bất kể
+    # đọc bằng pycolmap): bỏ điểm có track ngắn hơn min_track_length (ít view
+    # nhìn thấy, kém tin cậy) hoặc reprojection error > max_reproj_error.
+    min_track_length: 3
+    max_reproj_error: 2.0
   cache:
     images: true

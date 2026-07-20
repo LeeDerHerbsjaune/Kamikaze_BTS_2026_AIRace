@@ -1,4 +1,4 @@
-"""Tiện ích chung: set seed, learning rate schedule, PSNR nhanh."""
+"""General utilities: seeding, learning rate schedule, fast PSNR."""
 import random
 import numpy as np
 import torch
@@ -12,8 +12,9 @@ def set_seed(seed: int = 42):
 
 
 def get_expon_lr_func(lr_init, lr_final, lr_delay_mult=1.0, lr_delay_steps=0, max_steps=30000):
-    """Lịch giảm learning rate dạng exponential (giống 3DGS gốc),
-    có delay warm-up ở những bước đầu để tránh drift vị trí quá sớm."""
+    """Exponential learning-rate decay schedule (same as the reference 3DGS
+    implementation), with an optional warm-up delay at the very first steps
+    to avoid drifting positions too early before the model has stabilized."""
 
     def helper(step):
         if step < 0 or (lr_init == 0.0 and lr_final == 0.0):
@@ -32,10 +33,11 @@ def get_expon_lr_func(lr_init, lr_final, lr_delay_mult=1.0, lr_delay_steps=0, ma
 
 
 def psnr(rendered: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
-    # .reshape() thay vì .view(): ảnh render đi qua permute(2,0,1) trong
-    # renderer nên KHÔNG liên tục trong bộ nhớ (non-contiguous) -> .view()
-    # sẽ raise RuntimeError ("view size is not compatible..."), trong khi
-    # .reshape() tự xử lý cả 2 trường hợp (copy ngầm nếu cần).
+    # .reshape() instead of .view(): rendered images go through permute(2,0,1)
+    # in the renderer, so they are NOT contiguous in memory -> .view() would
+    # raise a RuntimeError ("view size is not compatible..."), while
+    # .reshape() transparently handles both cases (copying under the hood
+    # when needed).
     mse = ((rendered - gt) ** 2).reshape(rendered.shape[0], -1).mean(1, keepdim=True)
     return 20 * torch.log10(1.0 / torch.sqrt(mse))
 

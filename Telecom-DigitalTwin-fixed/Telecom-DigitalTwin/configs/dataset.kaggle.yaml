@@ -21,7 +21,7 @@
 # chỉ thêm tiền tố /kaggle/input/<slug>/ ở đầu.)
 
 dataset:
-  root: "/kaggle/input/datasets/lthuhong/airace2026-round-1/phase1/public_set/HCM0181/train"   # <-- SỬA LẠI cho đúng dataset của bạn
+  root: "/kaggle/input/vai-nvs-data-hcm0031/train"   # <-- SỬA LẠI cho đúng dataset của bạn
   type: "colmap"                  # colmap | nerf_transforms
   images:
     directory: "images"
@@ -36,7 +36,7 @@ dataset:
   pointcloud:
     source: "sparse"
   target_views:
-    file: "/kaggle/input/datasets/lthuhong/airace2026-round-1/phase1/public_set/HCM0181/test/test_poses.csv"
+    file: "target_poses.json"
   split:
     mode: "ratio"
     ratio: 0.1
@@ -48,12 +48,16 @@ preprocessing:
     random_points: 100000
   colmap:
     # QUAN TRỌNG: để false trên Kaggle nếu dataset ĐÃ có sẵn sparse/0.
-    # Nếu bật true, run_colmap_pipeline() sẽ cố GHI database.db/sparse/ vào
-    # chính `dataset.root` -> lỗi PermissionError vì /kaggle/input read-only.
-    # Nếu bạn thực sự cần tự chạy SfM trên Kaggle, phải trỏ workspace ra
-    # /kaggle/working/ trước (không hỗ trợ trực tiếp qua key này, xem README).
+    # Nếu bật true, pipeline tự chạy SfM bằng pycolmap (extract_features ->
+    # match_exhaustive -> incremental_mapping) - KHÔNG cần cài COLMAP CLI.
+    # Output SfM (database.db, sparse/) được ghi vào `workspace` bên dưới,
+    # KHÔNG ghi vào `dataset.root` - quan trọng trên Kaggle vì
+    # /kaggle/input read-only, workspace phải trỏ ra /kaggle/working/.
     enabled: false
-    executable: "colmap"
+    workspace: "/kaggle/working/colmap_workspace"
     camera_model: "PINHOLE"
+  pointcloud:
+    min_track_length: 3
+    max_reproj_error: 2.0
   cache:
     images: true
