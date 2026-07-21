@@ -1,13 +1,12 @@
-# ==========================================================
-# Inference Configuration
-# ==========================================================
-
 inference:
 
-  checkpoint: "./outputs/bts_scene_01/checkpoints/last.pth"
+  checkpoint: "D:/Project/Model/Weights/AIRace/iter_5000_fixed.pth"
 
   output:
-    directory: "./outputs/bts_scene_01/novel_views"
+    directory: "./outputs/bts_scene_01/novel_views"   # đây là THƯ MỤC lưu ảnh render, không phải đường dẫn checkpoint
+
+    zip: false
+    zip_name: "submission.zip"
 
   render:
 
