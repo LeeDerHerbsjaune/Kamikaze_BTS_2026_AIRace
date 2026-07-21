@@ -37,6 +37,9 @@ dataset:
     source: "sparse"
   target_views:
     file: "target_poses.json"
+    # See configs/dataset.yaml for full explanation. Change to "cam_to_world"
+    # if novel-view renders look like a garbled close-up mess of ellipsoids.
+    pose_convention: "world_to_cam"
   split:
     mode: "ratio"
     ratio: 0.1

@@ -114,7 +114,7 @@ match_exhaustive -> incremental_mapping`) — **không cần cài đặt COLMAP 
 riêng, chỉ cần `pip install pycolmap` (đã có trong `requirements.txt`). Phù
 hợp cả trên Kaggle, nơi không có sẵn `colmap.exe`/binary trong PATH.
 
-Định dạng `target_poses.json`:
+Định dạng `target_poses.json` (hoặc `target_poses.csv` — xem bên dưới):
 ```json
 [
   {"name": "target_001", "R": [[...]], "T": [tx, ty, tz],
@@ -124,6 +124,35 @@ hợp cả trên Kaggle, nơi không có sẵn `colmap.exe`/binary trong PATH.
 Pose này ở hệ toạ độ COLMAP gốc — nếu `preprocessing.normalize_scene: true`,
 pipeline sẽ tự áp cùng phép chuẩn hoá scene lên target pose trước khi render,
 bạn **không cần tự normalize file này**.
+
+**Nếu đề bài cấp target view dưới dạng `.csv` thay vì `.json`**, chỉ cần trỏ
+`dataset.target_views.file` sang tên file `.csv` — pipeline tự nhận diện qua
+đuôi file. Tên cột được so khớp không phân biệt hoa/thường, dấu gạch dưới hay
+khoảng trắng, chấp nhận nhiều biến thể phổ biến:
+
+| Nhóm | Các tên cột được chấp nhận |
+|---|---|
+| Tên ảnh | `name` / `image_name` / `target_name` / `id` / `filename` |
+| Rotation | `qw,qx,qy,qz` (quaternion) **hoặc** `r00..r22` (ma trận 3x3 phẳng) |
+| Translation | `tx,ty,tz` (hoặc `x,y,z`) |
+| Field of view | `fovx,fovy` (radian) **hoặc** `fx,fy` (tự tính FoV từ `width/height`) |
+| Kích thước | `width`/`w`/`img_width` và `height`/`h`/`img_height` |
+
+Nếu file CSV của bạn dùng tên cột khác các alias trên, pipeline sẽ báo lỗi rõ
+ràng liệt kê cột nào còn thiếu + toàn bộ cột thực tế phát hiện được trong
+file, giúp dễ đối chiếu và báo lại để bổ sung alias mới.
+
+**Nếu render novel view ra một đám ellipsoid vỡ nát** (trông như camera đang
+ở bên trong scene thay vì nhìn từ xa), gần như chắc chắn là do sai convention
+pose camera — thử đổi:
+```yaml
+dataset:
+  target_views:
+    pose_convention: "cam_to_world"   # mặc định "world_to_cam"
+```
+Pipeline cũng tự in cảnh báo ngay lúc load dataset (trước khi train) nếu phát
+hiện target camera nằm ở khoảng cách bất thường so với train camera — không
+cần đợi render xong mới biết bị sai.
 
 ## Chạy training + inference end-to-end
 

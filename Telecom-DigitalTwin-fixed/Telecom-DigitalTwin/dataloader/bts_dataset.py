@@ -28,6 +28,7 @@ ColmapLoader doesn't handle:
 """
 import os
 import json
+import csv
 
 import numpy as np
 import cv2
@@ -441,9 +442,15 @@ class BTSDataset:
     # ------------------------------------------------------------------
     def _load_target_views(self):
         """Reads the 20-50 target (novel-view) poses the challenge requires
-        images to be generated for. JSON format:
+        images to be generated for. Supports two file formats, auto-detected
+        by extension:
+
+        .json:
         [{"name": "target_001", "R":[[..]], "T":[..], "FoVx":.., "FoVy":..,
           "width":.., "height":..}, ...]
+
+        .csv: see _read_target_views_csv() for the accepted column names.
+
         No ground-truth image is attached (image=None).
 
         These poses come from the challenge (original COLMAP coordinate
@@ -451,17 +458,40 @@ class BTSDataset:
         applied here too - otherwise the model would receive camera
         coordinates in the wrong reference frame and render completely
         wrong images.
+
+        POSE CONVENTION: this codebase (like COLMAP) treats (R, T) as the
+        world->cam transform everywhere. Some drone/photogrammetry pose
+        logs instead export camera->world (R = cam->world rotation, T =
+        the camera's own position in world) - if fed in directly, this
+        produces a badly wrong camera placement, which typically renders
+        as a garbled close-up "swarm of giant ellipsoids" (the camera ends
+        up positioned inside/very near the point cloud instead of at its
+        real distance). Set 'dataset.target_views.pose_convention' to
+        "cam_to_world" in the config if your target poses come from such a
+        tool and renders look like that.
         """
         target_file = cfg_get(self.cfg, "dataset.target_views.file", "target_poses.json")
         target_path = os.path.join(self.data_root, target_file)
         if not os.path.exists(target_path):
             return
-        with open(target_path, encoding="utf-8") as f:
-            targets = json.load(f)
+
+        ext = os.path.splitext(target_path)[1].lower()
+        if ext == ".csv":
+            targets = _read_target_views_csv(target_path)
+        elif ext == ".json":
+            with open(target_path, encoding="utf-8") as f:
+                targets = json.load(f)
+        else:
+            raise ValueError(
+                f"Unsupported target_views file extension '{ext}' (only .json "
+                f"or .csv are supported): {target_path}")
+
+        pose_convention = cfg_get(self.cfg, "dataset.target_views.pose_convention", "world_to_cam")
 
         for i, t in enumerate(targets):
             R = np.array(t["R"])
             T = np.array(t["T"])
+            R, T = _to_world_to_cam(R, T, pose_convention)
             if self._norm_scale != 1.0 or np.any(self._norm_center != 0):
                 C = _camera_center(R, T)
                 C_norm = (C - self._norm_center) * self._norm_scale
@@ -473,10 +503,174 @@ class BTSDataset:
                          device=self.device)
             self.target_cameras.append(cam)
 
+        self._warn_if_target_views_look_misplaced()
+
+    def _warn_if_target_views_look_misplaced(self):
+        """Sanity check: compares how far target-view cameras sit from the
+        (already-normalized) scene center against the same distance for
+        train cameras. A drastic mismatch (e.g. target cameras sitting near
+        the origin/inside the point cloud while train cameras orbit at
+        radius ~1) is a strong signal of a pose-convention bug (see
+        dataset.target_views.pose_convention) rather than a training
+        problem - catching it here avoids spending a full training run only
+        to discover the novel-view renders are garbled."""
+        if not self.target_cameras or not self.train_cameras:
+            return
+        train_dist = np.mean([np.linalg.norm(c.camera_center.cpu().numpy()) for c in self.train_cameras])
+        target_dist = np.mean([np.linalg.norm(c.camera_center.cpu().numpy()) for c in self.target_cameras])
+        if train_dist < 1e-6:
+            return
+        ratio = target_dist / train_dist
+        if ratio < 0.2 or ratio > 5.0:
+            print(f"[BTSDataset] WARNING: target-view cameras sit at a very different distance "
+                  f"from the scene center ({target_dist:.3f}) than train cameras ({train_dist:.3f}, "
+                  f"ratio={ratio:.2f}x). This often means the target poses use a different "
+                  f"convention than expected (world->cam vs cam->world) and will render as a "
+                  f"garbled close-up mess of oversized ellipsoids. Try setting "
+                  f"'dataset.target_views.pose_convention: \"cam_to_world\"' in the config if "
+                  f"it is currently \"world_to_cam\" (or vice versa) and re-check.")
+
 
 def _camera_center(R, T):
     """Camera position in world coords: C = -R^T @ T (world->cam convention)."""
     return -R.T @ T
+
+
+def _to_world_to_cam(R, T, convention):
+    """Ensures (R, T) follow the world->cam convention used everywhere else
+    in this codebase (matches COLMAP's cam_from_world). Some drone/
+    photogrammetry pose-logging tools instead export camera->world (R =
+    cam->world rotation, T = the camera's own position in world) - if that
+    convention is selected, converts it here before it reaches Camera().
+
+    world_to_cam (default): (R, T) already follow COLMAP's convention -
+        world_point_in_cam = R @ world_point + T. No change needed.
+    cam_to_world: R is the cam->world rotation and T is the camera's
+        position in world coordinates (a very common convention for raw
+        pose logs). Converted via R_w2c = R^T, T_w2c = -R^T @ T.
+    """
+    if convention == "world_to_cam":
+        return R, T
+    if convention == "cam_to_world":
+        R_w2c = R.T
+        T_w2c = -R_w2c @ T
+        return R_w2c, T_w2c
+    raise ValueError(
+        f"Unknown dataset.target_views.pose_convention: '{convention}' "
+        f"(expected 'world_to_cam' or 'cam_to_world').")
+
+
+def _normalize_header(name: str) -> str:
+    """Strips everything except letters/digits and lowercases, so headers
+    like "Image Name", "image_name", "R_00", "Q-w" all normalize to a
+    single comparable form ("imagename", "imagename", "r00", "qw")."""
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _qvec2rotmat(qvec):
+    """Quaternion (w, x, y, z - COLMAP convention) -> 3x3 rotation matrix."""
+    w, x, y, z = qvec
+    return np.array([
+        [1 - 2 * y ** 2 - 2 * z ** 2, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
+        [2 * x * y + 2 * z * w, 1 - 2 * x ** 2 - 2 * z ** 2, 2 * y * z - 2 * x * w],
+        [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x ** 2 - 2 * y ** 2],
+    ])
+
+
+def _read_target_views_csv(path):
+    """Reads target novel-view poses from a CSV file. Column names are
+    matched case/spacing/underscore-insensitively (via _normalize_header)
+    against several common aliases, so headers like "Image Name",
+    "image_name", "target_id", "R_00".."R_22" or "qw,qx,qy,qz" are all
+    recognized without needing an exact match to one fixed schema.
+
+    Supported column groups (at least one option per group is required):
+      - name          : name | image_name | target_name | id | filename | file
+      - rotation      : EITHER a flattened 3x3 matrix (r00..r22, row-major)
+                        OR a quaternion (qw,qx,qy,qz - COLMAP convention)
+      - translation   : tx,ty,tz  (or x,y,z as a fallback)
+      - field of view : EITHER fovx,fovy directly (radians) OR fx,fy
+                        (computed into FoV together with width/height)
+      - width, height : width | w | img_width | image_width  (+ height variant)
+
+    Returns a list of dicts shaped exactly like the JSON format
+    (name/R/T/FoVx/FoVy/width/height), so the calling code in
+    _load_target_views() doesn't need to know which file format was
+    actually read.
+    """
+    with open(path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError(f"CSV file has no header row: {path}")
+        header_map = {_normalize_header(h): h for h in reader.fieldnames}
+
+        def col(*aliases):
+            for a in aliases:
+                if a in header_map:
+                    return header_map[a]
+            return None
+
+        name_col = col("name", "imagename", "targetname", "id", "filename", "file")
+        width_col = col("width", "w", "imgwidth", "imagewidth")
+        height_col = col("height", "h", "imgheight", "imageheight")
+        fovx_col, fovy_col = col("fovx"), col("fovy")
+        fx_col, fy_col = col("fx"), col("fy")
+        qw_col, qx_col, qy_col, qz_col = col("qw"), col("qx"), col("qy"), col("qz")
+        r_cols = [col(f"r{i}{j}") for i in range(3) for j in range(3)]
+        tx_col = col("tx", "x")
+        ty_col = col("ty", "y")
+        tz_col = col("tz", "z")
+
+        missing = []
+        if width_col is None:
+            missing.append("width (e.g. width/w/img_width)")
+        if height_col is None:
+            missing.append("height (e.g. height/h/img_height)")
+        if tx_col is None or ty_col is None or tz_col is None:
+            missing.append("translation tx,ty,tz (or x,y,z)")
+        has_quat = all(c is not None for c in (qw_col, qx_col, qy_col, qz_col))
+        has_matrix = all(c is not None for c in r_cols)
+        if not has_quat and not has_matrix:
+            missing.append("rotation: qw,qx,qy,qz (quaternion) OR r00..r22 (flattened matrix)")
+        has_fov = fovx_col is not None and fovy_col is not None
+        has_intrinsics = fx_col is not None and fy_col is not None
+        if not has_fov and not has_intrinsics:
+            missing.append("field of view: fovx,fovy (radians) OR fx,fy (+ width/height)")
+
+        if missing:
+            raise ValueError(
+                f"CSV target views at '{path}' is missing required column(s): {'; '.join(missing)}.\n"
+                f"Columns detected in the file: {list(reader.fieldnames)}\n"
+                f"If your column names don't match the supported aliases, let us know so "
+                f"they can be added to _read_target_views_csv()'s alias lists.")
+
+        targets = []
+        for i, row in enumerate(reader):
+            name = row[name_col] if name_col else f"target_{i:03d}"
+
+            if has_quat:
+                qvec = np.array([float(row[c]) for c in (qw_col, qx_col, qy_col, qz_col)])
+                R = _qvec2rotmat(qvec)
+            else:
+                flat = [float(row[c]) for c in r_cols]
+                R = np.array(flat).reshape(3, 3)
+
+            T = np.array([float(row[tx_col]), float(row[ty_col]), float(row[tz_col])])
+            width = int(float(row[width_col]))
+            height = int(float(row[height_col]))
+
+            if has_fov:
+                FoVx = float(row[fovx_col])
+                FoVy = float(row[fovy_col])
+            else:
+                fx = float(row[fx_col])
+                fy = float(row[fy_col])
+                FoVx = focal2fov(fx, width)
+                FoVy = focal2fov(fy, height)
+
+            targets.append({"name": name, "R": R, "T": T, "FoVx": FoVx, "FoVy": FoVy,
+                            "width": width, "height": height})
+        return targets
 
 
 def fov2focal_from_x(fov_x, w):

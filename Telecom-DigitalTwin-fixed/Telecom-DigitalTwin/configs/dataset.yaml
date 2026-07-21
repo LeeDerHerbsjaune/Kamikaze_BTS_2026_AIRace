@@ -21,7 +21,16 @@ dataset:
   pointcloud:
     source: "sparse"
   target_views:
-    file: "target_poses.json"
+    file: r"E:\project\AIRace2026\VAI_NVS_DATA\phase1\public_set\hcm0031\test\test_poses.csv"
+    # world_to_cam (default, COLMAP convention - matches train/eval poses):
+    #   (R, T) already transform world_point -> cam_point directly.
+    # cam_to_world (common in some drone/photogrammetry pose logs):
+    #   R = cam->world rotation, T = the camera's own position in world.
+    #   Using the wrong value here renders target views as a garbled
+    #   close-up mess (camera ends up placed inside/very near the point
+    #   cloud) - watch for the sanity-check warning BTSDataset prints when
+    #   loading target views if this is set wrong.
+    pose_convention: "world_to_cam"
   split:
     mode: "ratio"                 # ratio | llff
     ratio: 0.1
