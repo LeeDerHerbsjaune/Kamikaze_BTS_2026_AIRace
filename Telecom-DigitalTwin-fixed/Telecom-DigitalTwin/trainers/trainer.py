@@ -481,8 +481,28 @@ class Trainer:
         }
         for group in self.optimizer.param_groups:
             extension = d[group["name"]]
-            group["params"][0] = nn.Parameter(
-                torch.cat([group["params"][0], extension], dim=0).requires_grad_(True))
+            old_param = group["params"][0]
+            # IMPORTANT: Adam's internal state (exp_avg/exp_avg_sq) is keyed
+            # by the PARAMETER OBJECT ITSELF. Simply replacing
+            # group["params"][0] with a brand-new nn.Parameter (as done
+            # previously) leaves the old parameter's state entry orphaned in
+            # self.optimizer.state - it is never freed since nothing
+            # references old_param anymore except that dict, but Python
+            # can't garbage-collect it because the dict itself still holds
+            # it. Over ~100 densify events this leaks an ever-growing set of
+            # CUDA tensors, eventually causing an OOM unrelated to the
+            # current Gaussian count. Must explicitly move the state to the
+            # new parameter (extending with zeros for the new points).
+            stored_state = self.optimizer.state.get(old_param, None)
+            new_param = nn.Parameter(torch.cat([old_param, extension], dim=0).requires_grad_(True))
+            if stored_state is not None:
+                stored_state["exp_avg"] = torch.cat(
+                    [stored_state["exp_avg"], torch.zeros_like(extension)], dim=0)
+                stored_state["exp_avg_sq"] = torch.cat(
+                    [stored_state["exp_avg_sq"], torch.zeros_like(extension)], dim=0)
+                del self.optimizer.state[old_param]
+                self.optimizer.state[new_param] = stored_state
+            group["params"][0] = new_param
             setattr(self.gaussians, _PARAM_TO_ATTR[group["name"]], group["params"][0])
 
         n = self.gaussians._xyz.shape[0]
@@ -493,7 +513,19 @@ class Trainer:
     def _prune_points(self, mask):
         valid = ~mask
         for group in self.optimizer.param_groups:
-            group["params"][0] = nn.Parameter(group["params"][0][valid].requires_grad_(True))
+            old_param = group["params"][0]
+            # Same leak as in _append_points (see comment there): must
+            # explicitly carry Adam's state over to the new parameter
+            # object, indexed by the same `valid` mask, instead of leaving
+            # the old (larger) state tensors orphaned in optimizer.state.
+            stored_state = self.optimizer.state.get(old_param, None)
+            new_param = nn.Parameter(old_param[valid].requires_grad_(True))
+            if stored_state is not None:
+                stored_state["exp_avg"] = stored_state["exp_avg"][valid]
+                stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][valid]
+                del self.optimizer.state[old_param]
+                self.optimizer.state[new_param] = stored_state
+            group["params"][0] = new_param
             setattr(self.gaussians, _PARAM_TO_ATTR[group["name"]], group["params"][0])
         self.gaussians.xyz_gradient_accum = self.gaussians.xyz_gradient_accum[valid]
         self.gaussians.denom = self.gaussians.denom[valid]
@@ -503,5 +535,20 @@ class Trainer:
         new_opacity = inverse_sigmoid(torch.min(self.gaussians.opacity, torch.ones_like(self.gaussians.opacity) * 0.01))
         for group in self.optimizer.param_groups:
             if group["name"] == "opacity":
-                group["params"][0] = nn.Parameter(new_opacity.requires_grad_(True))
+                old_param = group["params"][0]
+                # Same leak pattern as _append_points/_prune_points (see
+                # comments there). Shape doesn't change here, but the old
+                # parameter object's Adam state would still be orphaned if
+                # not migrated. Also reset exp_avg/exp_avg_sq to zero (not
+                # just copy over) since the opacity values just changed
+                # discontinuously - keeping stale momentum from before the
+                # reset would fight the new values.
+                stored_state = self.optimizer.state.get(old_param, None)
+                new_param = nn.Parameter(new_opacity.requires_grad_(True))
+                if stored_state is not None:
+                    stored_state["exp_avg"] = torch.zeros_like(new_opacity)
+                    stored_state["exp_avg_sq"] = torch.zeros_like(new_opacity)
+                    del self.optimizer.state[old_param]
+                    self.optimizer.state[new_param] = stored_state
+                group["params"][0] = new_param
                 self.gaussians._opacity = group["params"][0]

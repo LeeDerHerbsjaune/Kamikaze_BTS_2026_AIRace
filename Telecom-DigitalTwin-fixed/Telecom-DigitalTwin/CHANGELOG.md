@@ -215,3 +215,48 @@ Lệnh trên phải chạy không lỗi và in ra đầy đủ các section
       bị vỡ. Đã test: convention đúng cho vị trí camera hợp lý, convention
       sai với lệch lớn (mô phỏng đúng tình huống thực tế) trigger đúng cảnh
       báo, còn JSON target views mặc định `world_to_cam` không đổi hành vi.
+
+## 🔴 Sửa memory leak nghiêm trọng trong Adam optimizer (lần 8)
+
+28. **VRAM tăng dần đều rồi tràn giữa chừng training (crash ở iter ~9800/30000,
+    khi `n_gaussians` vẫn ổn định ~148k, thậm chí đang giảm do prune)** -
+    không liên quan `dataset.images.resolution` hay `max_gaussians`. Nguyên
+    nhân: `_append_points()`, `_prune_points()`, `reset_opacity()` trong
+    `trainers/trainer.py` thay `group["params"][0]` bằng **object
+    `nn.Parameter` HOÀN TOÀN MỚI** mỗi lần densify/prune/reset, nhưng
+    `torch.optim.Adam` lưu momentum (`exp_avg`, `exp_avg_sq`) trong
+    `self.optimizer.state`, một dict **đánh index theo chính object
+    Parameter**. Không xoá entry cũ trước khi thay Parameter khiến state
+    (2 tensor CUDA cùng shape với Parameter tại thời điểm đó) bị **mồ côi
+    vĩnh viễn** - không còn được dùng nhưng không bao giờ được giải phóng,
+    vì `self.optimizer.state` vẫn giữ tham chiếu tới nó. `densify_and_prune`
+    chạy ~93 lần trước khi crash (mỗi 100 iter từ iter 500) → tích luỹ đủ
+    rác để tràn VRAM dù model đang hoạt động bình thường.
+
+    Đã sửa theo đúng pattern repo gốc `graphdeco-inria/gaussian-splatting`
+    (`cat_tensors_to_optimizer`/`_prune_optimizer`/`replace_tensor_to_optimizer`):
+    trước khi thay Parameter, lấy state cũ qua
+    `self.optimizer.state.get(old_param)`, resize đúng theo phép biến đổi
+    tương ứng (`torch.cat` với zero cho điểm mới ở `_append_points`, index
+    bằng `valid` mask ở `_prune_points`, reset về 0 ở `reset_opacity` vì giá
+    trị vừa nhảy bất liên tục), `del` entry cũ, rồi gán lại state đã migrate
+    cho Parameter mới.
+
+    **Đã fix thêm 1 lỗi tự gây ra trong lúc sửa**: bản sửa đầu tiên vô tình
+    làm mất dòng `setattr(self.gaussians, ..., group["params"][0])` trong
+    `_prune_points()` (đồng bộ attribute `_xyz/_opacity/...` của
+    `GaussianModel` với Parameter mới) - phát hiện và sửa ngay trong cùng
+    lượt trước khi test.
+
+    **Đã verify bằng test đo trực tiếp bộ nhớ**, không chỉ test shape:
+    - Đếm tổng `numel()` của mọi tensor `exp_avg`/`exp_avg_sq` trong
+      `optimizer.state`, so với giá trị kỳ vọng (= 2× số phần tử mỗi
+      Parameter hiện tại) qua 10 chu kỳ `densify_and_prune` +
+      `reset_opacity` liên tiếp - khớp chính xác 100%, chênh lệch = 0.
+    - Kiểm tra không còn object Parameter mồ côi nào trong
+      `optimizer.state.keys()` (so khớp `id()` với params hiện tại).
+    - **Verify ngược bằng chính code cũ (có bug)** để xác nhận phương pháp
+      test thực sự phát hiện được lỗi: chỉ 1 lần densify+prune khiến state
+      tăng từ 23,600 lên 102,306 phần tử (>4 lần), với đúng 6 Parameter mồ
+      côi còn sót (khớp 6 param-group) - xác nhận cả bug lẫn cách test đều
+      đúng, không phải false positive.

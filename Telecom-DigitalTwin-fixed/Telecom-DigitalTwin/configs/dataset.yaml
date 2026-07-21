@@ -21,7 +21,7 @@ dataset:
   pointcloud:
     source: "sparse"
   target_views:
-    file: "E:/project/AIRace2026/VAI_NVS_DATA/phase1/public_set/hcm0031/test/test_poses.csv"
+    file: "target_poses.json"
     # world_to_cam (default, COLMAP convention - matches train/eval poses):
     #   (R, T) already transform world_point -> cam_point directly.
     # cam_to_world (common in some drone/photogrammetry pose logs):

@@ -14,7 +14,7 @@ training:
 
   checkpoint:
 
-    directory: r"D:\Project\Model\Weights\AIRace\iter_5000_fixed.pth"
+    directory: "./outputs/bts_scene_01/checkpoints"
 
 # ==========================================================
 # Optimizer
