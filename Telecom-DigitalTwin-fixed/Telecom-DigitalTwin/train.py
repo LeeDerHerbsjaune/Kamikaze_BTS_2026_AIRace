@@ -43,6 +43,12 @@ def main():
                          help="Override dataset.root from the config (handy on Kaggle/Colab "
                               "when the dataset path changes between runs and you don't "
                               "want to edit the yaml).")
+    parser.add_argument("--resume", type=str, default=None,
+                         help="Path to an existing .pth checkpoint to RESUME training from, "
+                              "instead of initializing new Gaussians from the point cloud. "
+                              "Handy after a session gets interrupted/OOM'd (e.g. on Kaggle). "
+                              "dataset.root must still point at the same dataset used originally, "
+                              "so train/eval cameras and normalize_scene match the checkpoint.")
     args = parser.parse_args()
 
     # ---------- Load Config ----------
@@ -84,34 +90,53 @@ def main():
                              f"{len(dataset.target_cameras)} target")
 
     # ---------- Build Gaussian Model ----------
-    logger.log_text("Initializing Gaussian Model from the point cloud...")
     sh_degree = cfg_get(cfg, "model.sh_degree", 3)
     gaussians = GaussianModel(sh_degree, device=device)
 
-    init_position = cfg_get(cfg, "model.init.position", "pointcloud")
-    opacity_init = cfg_get(cfg, "model.init.opacity", 0.1)
-    scale_init_factor = cfg_get(cfg, "model.init.scale_factor", 1.0)
+    resume_path = args.resume or cfg_get(cfg, "training.resume_from", None)
+    resume_iteration = 0
+    resume_optimizer_state = None
 
-    if dataset.point_cloud_xyz is not None and init_position == "pointcloud":
-        xyz, rgb = dataset.point_cloud_xyz, dataset.point_cloud_rgb
+    if resume_path:
+        if not os.path.exists(resume_path):
+            raise FileNotFoundError(f"--resume points at a checkpoint that doesn't exist: '{resume_path}'")
+        logger.log_text(f"Resuming training from checkpoint: {resume_path}")
+        ckpt = torch.load(resume_path, map_location=device)
+        gaussians.restore(ckpt["gaussians"])
+        resume_iteration = ckpt["iteration"]
+        resume_optimizer_state = ckpt.get("optimizer")  # may be None for older/no-optimizer-state checkpoints
+        logger.log_text(f"Restored {gaussians.xyz.shape[0]} Gaussians, "
+                         f"continuing from iteration {resume_iteration}.")
+        logger.log_artifact("resume_checkpoint", resume_path, iteration=resume_iteration,
+                            note=f"{gaussians.xyz.shape[0]} Gaussians restored")
     else:
-        # No SfM point cloud available (e.g. using the nerf_transforms
-        # format), or model.init.position="random" was explicitly requested
-        # in the config.
-        n = cfg_get(cfg, "preprocessing.initialize_pointcloud.random_points", 100000)
-        xyz = (np.random.rand(n, 3) * 2 - 1) * 2.0
-        rgb = np.random.rand(n, 3)
-        logger.log_text(f"Not using an SfM point cloud (init_position='{init_position}'), "
-                         f"initializing {n} random points.")
+        logger.log_text("Initializing Gaussian Model from the point cloud...")
+        init_position = cfg_get(cfg, "model.init.position", "pointcloud")
+        opacity_init = cfg_get(cfg, "model.init.opacity", 0.1)
+        scale_init_factor = cfg_get(cfg, "model.init.scale_factor", 1.0)
 
-    from utils.camera_utils import cameras_extent
-    spatial_lr_scale = cameras_extent(dataset.train_cameras)
-    gaussians.create_from_pcd(xyz, rgb, spatial_lr_scale,
-                               opacity_init=opacity_init, scale_init_factor=scale_init_factor)
-    logger.log_text(f"Initialized {gaussians.xyz.shape[0]} Gaussians")
+        if dataset.point_cloud_xyz is not None and init_position == "pointcloud":
+            xyz, rgb = dataset.point_cloud_xyz, dataset.point_cloud_rgb
+        else:
+            # No SfM point cloud available (e.g. using the nerf_transforms
+            # format), or model.init.position="random" was explicitly requested
+            # in the config.
+            n = cfg_get(cfg, "preprocessing.initialize_pointcloud.random_points", 100000)
+            xyz = (np.random.rand(n, 3) * 2 - 1) * 2.0
+            rgb = np.random.rand(n, 3)
+            logger.log_text(f"Not using an SfM point cloud (init_position='{init_position}'), "
+                             f"initializing {n} random points.")
+
+        from utils.camera_utils import cameras_extent
+        spatial_lr_scale = cameras_extent(dataset.train_cameras)
+        gaussians.create_from_pcd(xyz, rgb, spatial_lr_scale,
+                                   opacity_init=opacity_init, scale_init_factor=scale_init_factor)
+        logger.log_text(f"Initialized {gaussians.xyz.shape[0]} Gaussians")
 
     # ---------- Trainer (builds renderer/loss/optimizer internally) ----------
-    trainer = Trainer(cfg, gaussians, dataset, logger)
+    trainer = Trainer(cfg, gaussians, dataset, logger,
+                       resume_iteration=resume_iteration,
+                       resume_optimizer_state=resume_optimizer_state)
 
     # ---------- Training Loop + Validation + Save Checkpoint ----------
     trainer.train()

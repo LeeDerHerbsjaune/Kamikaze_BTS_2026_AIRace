@@ -58,7 +58,8 @@ _PARAM_TO_OPTIMIZE_FLAG = {
 
 
 class Trainer:
-    def __init__(self, cfg, gaussians, dataset, logger):
+    def __init__(self, cfg, gaussians, dataset, logger,
+                 resume_iteration: int = 0, resume_optimizer_state: dict = None):
         self.cfg = cfg
         self.gaussians = gaussians
         self.dataset = dataset
@@ -72,6 +73,14 @@ class Trainer:
             cfg, "training.checkpoint.directory", "./outputs/checkpoints")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
+        # Whether to include the Adam optimizer state (exp_avg/exp_avg_sq) in
+        # every saved checkpoint, so a later --resume can restore momentum
+        # instead of restarting Adam from zero. Off by default since it
+        # roughly doubles+ checkpoint size (Adam keeps 2 extra tensors per
+        # parameter) - not worth the disk cost unless you actually expect to
+        # resume (e.g. training on a session-limited host like Kaggle).
+        self.save_optimizer_state = cfg_get(cfg, "training.save_optimizer_state", False)
+
         self.train_cams = list(dataset.train_cameras)
         if not self.train_cams:
             raise ValueError("dataset.train_cameras is empty - nothing to train on.")
@@ -80,10 +89,37 @@ class Trainer:
         # training summary to notes.md (see log_summary in train()).
         self.eval_history = []
 
-        # IMPORTANT: gaussians.create_from_pcd(...) must have already run
-        # before constructing Trainer(...), since setup_training needs
-        # gaussians.xyz to already have its real size.
+        # IMPORTANT: gaussians.create_from_pcd(...) (or gaussians.restore(...)
+        # when resuming) must have already run before constructing
+        # Trainer(...), since setup_training needs gaussians.xyz to already
+        # have its real size.
         self.setup_training(cfg)
+
+        # ---------------- Resume ----------------
+        # Continue the iteration counter from where the checkpoint left off
+        # (NOT restart at 1), so the lr schedule / sh-degree schedule /
+        # densify-prune-reset schedule - all driven by the ABSOLUTE iteration
+        # number below - stay consistent with the Gaussian state that was
+        # actually restored.
+        self.start_iteration = resume_iteration + 1
+        if resume_optimizer_state is not None:
+            try:
+                self.optimizer.load_state_dict(resume_optimizer_state)
+                self.logger.log_text(
+                    "Restored optimizer state (Adam momentum) from checkpoint - resuming seamlessly.")
+            except Exception as e:
+                self.logger.log_text(
+                    f"WARNING: could not restore optimizer state ({e}) - state doesn't match "
+                    f"the current param-group structure (e.g. different Gaussian count from "
+                    f"densify), falling back to a freshly-initialized optimizer. Gaussian "
+                    f"weights themselves are unaffected.")
+        elif resume_iteration > 0:
+            self.logger.log_text(
+                "Resuming without a saved optimizer state (checkpoint predates "
+                "training.save_optimizer_state=true, or it was off when that checkpoint was "
+                "saved) - Adam momentum restarts from zero. Gaussian weights are unaffected; "
+                "expect only a brief, minor dip/wobble in loss for the first few hundred "
+                "iterations after resume.")
 
     def train(self):
         cfg = self.cfg
@@ -114,14 +150,23 @@ class Trainer:
         prune_interval = cfg_get(cfg, "pruning.schedule.interval") or densify_interval
         min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", None)
 
-        pbar = tqdm(range(1, n_iters + 1), desc="Training")
+        if self.start_iteration > n_iters:
+            self.logger.log_text(
+                f"start_iteration ({self.start_iteration}) > training.iterations ({n_iters}) - "
+                f"the resumed checkpoint is already past the configured target, nothing to "
+                f"train further. Raise 'training.iterations' in the config if you want to "
+                f"continue training this run.")
+            return
+
+        pbar = tqdm(range(self.start_iteration, n_iters + 1), desc="Training")
         cam_pool = []
         train_start_time = time.time()
         last_log_time = train_start_time
         n_gaussians_before_run = self.gaussians.xyz.shape[0]
 
         self.logger.log_text(
-            f"Starting training: {n_iters} iterations, "
+            f"Starting training: {n_iters} iterations"
+            f"{f' (resuming from iteration {self.start_iteration})' if self.start_iteration > 1 else ''}, "
             f"{n_gaussians_before_run} initial Gaussians, "
             f"{len(self.train_cams)} train views, {len(self.dataset.eval_cameras)} eval views, "
             f"backend={self.backend}, densify={'on' if densify_enabled else 'off'}.")
@@ -287,8 +332,12 @@ class Trainer:
     def save_checkpoint(self, iteration, name=None):
         name = name or f"iter_{iteration}"
         path = os.path.join(self.checkpoint_dir, f"{name}.pth")
-        torch.save({"iteration": iteration, "gaussians": self.gaussians.capture()}, path)
-        self.logger.log_text(f"Saved checkpoint: {path}")
+        payload = {"iteration": iteration, "gaussians": self.gaussians.capture()}
+        if self.save_optimizer_state:
+            payload["optimizer"] = self.optimizer.state_dict()
+        torch.save(payload, path)
+        self.logger.log_text(
+            f"Saved checkpoint: {path}" + (" (with optimizer state)" if self.save_optimizer_state else ""))
 
         note = f"{self.gaussians.xyz.shape[0]} Gaussians"
         if self.eval_history and self.eval_history[-1][0] <= iteration:
