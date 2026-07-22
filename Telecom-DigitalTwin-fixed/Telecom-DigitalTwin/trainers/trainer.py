@@ -144,6 +144,21 @@ class Trainer:
 
         min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.005)
         opacity_reset_interval = cfg_get(cfg, "pruning.opacity.reset_interval", 3000)
+        # Stop periodically zeroing-out opacity once we're this far into
+        # training. Defaults to densify_until_iter: once density stops
+        # growing/pruning, a reset only destabilizes convergence with
+        # nothing gained, and - critically - a reset with no iterations
+        # left afterward to recover leaves the FINAL saved checkpoint stuck
+        # in its just-reset, near-invisible state. Confirmed from a real
+        # run's eval history: PSNR crashed to ~5.6 (from a normal ~18-19)
+        # at every iteration that was a common multiple of
+        # opacity_reset_interval (3000) and eval_interval (2000) - i.e.
+        # every 6000 iterations - and fully recovered ~2000 iterations
+        # later each time. Because reset_interval=3000 evenly divides
+        # iterations=30000, the very last reset landed exactly on the final
+        # iteration, so `last.pth` was saved mid-crash with no recovery
+        # time - not a training failure, just unlucky scheduling.
+        opacity_reset_until_iter = cfg_get(cfg, "pruning.opacity.reset_until_iter", densify_until_iter)
         max_screen_size = cfg_get(cfg, "pruning.size.max_screen", 20)
 
         prune_after_iter = cfg_get(cfg, "pruning.schedule.after_iter") or densify_from_iter
@@ -253,8 +268,13 @@ class Trainer:
                 if (iteration > prune_after_iter and iteration % prune_interval == 0):
                     self.prune_low_quality(min_opacity, min_visible_count=min_visible_count)
 
-                if opacity_reset_interval and iteration % opacity_reset_interval == 0:
+                if (opacity_reset_interval and iteration % opacity_reset_interval == 0
+                        and iteration < min(opacity_reset_until_iter, n_iters)):
                     self.reset_opacity()
+                    self.logger.log_text(
+                        f"[opacity-reset @ iter {iteration}] opacity forced back down to ~0.01 - "
+                        f"expect PSNR/SSIM to dip at the very next eval and recover over the "
+                        f"following ~1-2k iterations; this is expected, not a bug.")
 
             if iteration % log_interval == 0:
                 now = time.time()
