@@ -1,0 +1,26 @@
+# ==========================================================
+# Config Gaussian Model
+# ==========================================================
+
+model:
+
+  # Spherical Harmonics
+  sh_degree: 3
+
+  # Gaussian initialization
+  init:
+    position: "pointcloud"      # pointcloud | random
+    opacity: 0.1
+    scale_factor: 1.0
+    rotation: "identity"
+
+  # Gaussian parameters
+  percent_dense: 0.01
+
+  # Optimization flags (actually enforced by trainers/trainer.py)
+  optimize:
+    position: true
+    rotation: true
+    scale: true
+    opacity: true
+    sh: true

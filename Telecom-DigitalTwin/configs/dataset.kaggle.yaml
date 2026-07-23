@@ -1,0 +1,66 @@
+# ==========================================================
+# Config Dataset - phiên bản dùng cho Kaggle Notebook
+# ==========================================================
+#
+# Trên Kaggle, dataset được mount READ-ONLY tại /kaggle/input/<tên-dataset>/...
+# và thư mục duy nhất được ghi là /kaggle/working/.
+#
+# CÁCH LẤY ĐÚNG ĐƯỜNG DẪN "root" BÊN DƯỚI:
+#   1) Trong 1 cell của notebook, chạy:
+#        import os
+#        for root, dirs, files in os.walk("/kaggle/input"):
+#            print(root)
+#      rồi tìm thư mục chứa "images/" và "sparse/" cùng cấp.
+#   2) HOẶC đơn giản hơn: mở panel "Data" bên phải notebook, bấm vào dataset
+#      -> Kaggle hiển thị sẵn đường dẫn đầy đủ, copy dán vào `root` bên dưới.
+#
+# Ví dụ nếu bạn add dataset tên "vai-nvs-data-hcm0031" và cấu trúc gốc là
+# .../hcm0031/train/{images,sparse}, đường dẫn thường sẽ là:
+#   /kaggle/input/vai-nvs-data-hcm0031/train
+# (Kaggle giữ nguyên cấu trúc thư mục con bên trong dataset gốc bạn upload,
+# chỉ thêm tiền tố /kaggle/input/<slug>/ ở đầu.)
+
+dataset:
+  root: "/kaggle/input/vai-nvs-data-hcm0031/train"   # <-- SỬA LẠI cho đúng dataset của bạn
+  type: "colmap"                  # colmap | nerf_transforms
+  images:
+    directory: "images"
+    # Xem giải thích đầy đủ trong configs/dataset.yaml. -1 = tự cap 1600px
+    # (khuyên dùng trên Kaggle, GPU T4/P100 thường chỉ ~16GB VRAM, ảnh drone
+    # DJI full-res dễ gây CUDA OOM nhất là lúc eval chạy LPIPS/VGG). Nếu vẫn
+    # OOM sau khi cập nhật fix, hạ tiếp xuống N>0 (vd 2 hoặc 4) để giảm thêm.
+    resolution: -1
+    white_background: false
+  cameras:
+    source: "colmap"
+  pointcloud:
+    source: "sparse"
+  target_views:
+    file: "target_poses.json"
+    # See configs/dataset.yaml for full explanation. Change to "cam_to_world"
+    # if novel-view renders look like a garbled close-up mess of ellipsoids.
+    pose_convention: "world_to_cam"
+  split:
+    mode: "ratio"
+    ratio: 0.1
+
+preprocessing:
+  normalize_scene: true
+  initialize_pointcloud:
+    method: "sparse"
+    random_points: 100000
+  colmap:
+    # QUAN TRỌNG: để false trên Kaggle nếu dataset ĐÃ có sẵn sparse/0.
+    # Nếu bật true, pipeline tự chạy SfM bằng pycolmap (extract_features ->
+    # match_exhaustive -> incremental_mapping) - KHÔNG cần cài COLMAP CLI.
+    # Output SfM (database.db, sparse/) được ghi vào `workspace` bên dưới,
+    # KHÔNG ghi vào `dataset.root` - quan trọng trên Kaggle vì
+    # /kaggle/input read-only, workspace phải trỏ ra /kaggle/working/.
+    enabled: false
+    workspace: "/kaggle/working/colmap_workspace"
+    camera_model: "PINHOLE"
+  pointcloud:
+    min_track_length: 3
+    max_reproj_error: 2.0
+  cache:
+    images: true

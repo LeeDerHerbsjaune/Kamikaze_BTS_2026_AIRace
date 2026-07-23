@@ -1,0 +1,25 @@
+# ==========================================================
+# Config gốc - phiên bản Kaggle
+# Giống hệt configs/default.yaml, chỉ khác include dataset.kaggle.yaml
+# thay vì dataset.yaml (đường dẫn trỏ vào /kaggle/input thay vì ./data/...).
+#
+# Chạy trên Kaggle:
+#   !python train.py --config configs/default.kaggle.yaml
+# ==========================================================
+
+experiment_name: "bts_scene_01"
+seed: 42
+device: "cuda"
+
+# /kaggle/input là READ-ONLY, chỉ /kaggle/working được phép ghi.
+# output_root ép toàn bộ checkpoint/log/novel_views ghi vào đây, bất kể
+# notebook đang chạy từ thư mục nào (an toàn hơn dùng đường dẫn tương đối).
+output_root: "/kaggle/working/outputs"
+
+include:
+  - dataset.kaggle.yaml    # dataset + preprocessing (đường dẫn /kaggle/input)
+  - gaussian.yaml            # model
+  - renderer.yaml              # renderer
+  - loss.yaml                    # loss + evaluation
+  - train.yaml                     # optimizer + training + densify/pruning
+  - inference.yaml                   # inference

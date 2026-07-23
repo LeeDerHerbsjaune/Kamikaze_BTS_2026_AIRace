@@ -1,0 +1,110 @@
+# ==========================================================
+# Training Configuration
+# ==========================================================
+
+training:
+
+  iterations: 30000
+
+  log_interval: 50
+
+  eval_interval: 2000
+
+  save_interval: 5000
+
+  checkpoint:
+
+    directory: "./outputs/bts_scene_01/checkpoints"
+
+# ==========================================================
+# Optimizer
+# ==========================================================
+
+optimizer:
+
+  position:
+
+    lr_init: 0.00016
+    lr_final: 0.0000016
+    lr_delay_mult: 0.01
+    lr_max_steps: 30000
+
+  feature:
+
+    lr: 0.0025
+
+  opacity:
+
+    lr: 0.05
+
+  scaling:
+
+    lr: 0.005
+
+  rotation:
+
+    lr: 0.001
+
+# ==========================================================
+# Spherical Harmonics
+# ==========================================================
+
+sh:
+
+  increase_interval: 1000
+
+# ==========================================================
+# Gaussian Densification
+# ==========================================================
+
+densify:
+
+  enabled: true
+
+  from_iter: 500
+
+  until_iter: 15000
+
+  interval: 100
+
+  grad_threshold: 0.0002
+
+  clone_factor: 2
+  split_factor: 2
+  min_world_size_ratio: 0.00001
+  # Trần an toàn cho tổng số Gaussian. Để null = không giới hạn (mặc định
+  # gốc), nhưng trên GPU VRAM hạn chế (Kaggle T4/P100 ~16GB), số Gaussian có
+  # thể tăng không kiểm soát qua densify (clone+split) tới khi CUDA OOM giữa
+  # chừng training, MẤT HẾT tiến trình đã chạy. Đặt 1 con số cụ thể (vd
+  # 400000) để Trainer tự loại bớt Gaussian opacity thấp nhất khi vượt trần,
+  # thay vì để crash. 400000 chỉ là điểm khởi đầu - không phải con số đảm
+  # bảo an toàn tuyệt đối (còn phụ thuộc dataset.images.resolution, số ảnh,
+  # sh_degree...); tăng/giảm dựa trên VRAM còn trống thực tế bạn quan sát
+  # được qua nvidia-smi trong lúc train.
+  max_gaussians: 400000
+
+# ==========================================================
+# Gaussian Pruning
+# ==========================================================
+
+pruning:
+
+  opacity:
+
+    min: 0.005
+
+    reset_interval: 3000
+
+  size:
+
+    max_screen: 20
+
+    max_world_ratio: 0.1
+
+  schedule:
+
+    # Prune nhẹ theo lịch riêng, độc lập với chu kỳ densify chính.
+    # Mặc định dùng lại from_iter/interval của densify nếu để null.
+    after_iter: null
+    interval: null
+    min_visible_count: null

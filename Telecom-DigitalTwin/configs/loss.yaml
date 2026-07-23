@@ -1,0 +1,29 @@
+# ==========================================================
+# Loss Configuration
+# ==========================================================
+
+loss:
+
+  l1:
+    weight: 0.8
+
+  dssim:
+    weight: 0.2
+
+  depth:
+    weight: 0.0
+
+  normal:
+    weight: 0.0
+
+  mask:
+    weight: 0.0
+
+evaluation:
+
+  metrics:
+    - psnr
+    - ssim
+    - lpips
+
+  use_lpips: true
