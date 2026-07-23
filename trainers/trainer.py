@@ -297,3 +297,5 @@ class Trainer:
                 self.gaussians._opacity = group["params"][0]
                 # gay random noise vào opacity để tránh bị stuck ở local minima
                 self.gaussians._opacity.data += torch.normal(mean=0.0, std=0.01, size=self.gaussians._opacity.shape, device=self.gaussians.device)
+                #chaneg opacity thành sigmoid để đảm bảo giá trị trong khoảng [0,1]
+                self.gaussians._opacity.data = torch.sigmoid(self.gaussians._opacity.data)
