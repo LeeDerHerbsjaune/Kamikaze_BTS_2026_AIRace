@@ -621,3 +621,5 @@ class Trainer:
                     self.optimizer.state[new_param] = stored_state
                 group["params"][0] = new_param
                 self.gaussians._opacity = group["params"][0]
+                # change the actual opacity values in the Gaussian model to the new reset values
+                self.gaussians.opacity.data.copy_(torch.sigmoid(new_opacity))
