@@ -295,3 +295,5 @@ class Trainer:
             if group["name"] == "opacity":
                 group["params"][0] = nn.Parameter(new_opacity.requires_grad_(True))
                 self.gaussians._opacity = group["params"][0]
+                # gay random noise vào opacity để tránh bị stuck ở local minima
+                self.gaussians._opacity.data += torch.normal(mean=0.0, std=0.01, size=self.gaussians._opacity.shape, device=self.gaussians.device)
