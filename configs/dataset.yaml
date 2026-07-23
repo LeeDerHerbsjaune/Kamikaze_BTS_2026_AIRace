@@ -3,10 +3,17 @@
 # ==========================================================
 
 dataset:
-  root: "./data/bts_scene_01"
-  type: "colmap"                  # colmap | nerf
+  root: "E:/project/AIRace2026/VAI_NVS_DATA/phase1/public_set/hcm0031/train"
+  type: "colmap"                  # colmap | nerf_transforms
   images:
     directory: "images"
+    # Độ phân giải ảnh dùng để train/eval (KHÔNG ảnh hưởng target novel views,
+    # luôn giữ đúng width/height theo target_poses.json):
+    #   -1 : mặc định AN TOÀN - tự động cap cạnh dài nhất xuống 1600px nếu
+    #        ảnh gốc lớn hơn (ảnh drone DJI thường 4000x3000+, nếu để full-res
+    #        rất dễ CUDA OOM, đặc biệt lúc evaluate_dataset() chạy LPIPS/VGG).
+    #    0 : ép giữ nguyên độ phân giải gốc, không scale (cần GPU VRAM lớn).
+    #    N>0: chia độ phân giải gốc cho N (2 = còn 1/2 mỗi chiều, 4 = còn 1/4).
     resolution: -1
     white_background: false
   cameras:
@@ -15,6 +22,15 @@ dataset:
     source: "sparse"
   target_views:
     file: "target_poses.json"
+    # world_to_cam (default, COLMAP convention - matches train/eval poses):
+    #   (R, T) already transform world_point -> cam_point directly.
+    # cam_to_world (common in some drone/photogrammetry pose logs):
+    #   R = cam->world rotation, T = the camera's own position in world.
+    #   Using the wrong value here renders target views as a garbled
+    #   close-up mess (camera ends up placed inside/very near the point
+    #   cloud) - watch for the sanity-check warning BTSDataset prints when
+    #   loading target views if this is set wrong.
+    pose_convention: "world_to_cam"
   split:
     mode: "ratio"                 # ratio | llff
     ratio: 0.1
@@ -25,8 +41,21 @@ preprocessing:
     method: "sparse"              # sparse | random
     random_points: 100000
   colmap:
+    # Nếu true, tự chạy SfM bằng pycolmap (extract_features -> match_exhaustive
+    # -> incremental_mapping) khi chưa có sẵn sparse/0 - chỉ cần `pip install
+    # pycolmap`, KHÔNG cần cài đặt COLMAP CLI riêng.
     enabled: false
-    executable: "colmap"
+    # Nơi ghi output SfM (database.db, sparse/). Để trống (null) = ghi vào
+    # chính dataset.root (mặc định, đúng cho local nếu dataset.root ghi được).
+    # Set giá trị khác nếu dataset.root chỉ đọc được (vd Kaggle input dataset)
+    # - xem configs/dataset.kaggle.yaml.
+    workspace: null
     camera_model: "PINHOLE"
+  pointcloud:
+    # Lọc điểm nhiễu khi đọc points3D từ sparse reconstruction (áp dụng bất kể
+    # đọc bằng pycolmap): bỏ điểm có track ngắn hơn min_track_length (ít view
+    # nhìn thấy, kém tin cậy) hoặc reprojection error > max_reproj_error.
+    min_track_length: 3
+    max_reproj_error: 2.0
   cache:
     images: true

@@ -17,7 +17,7 @@ model:
   # Gaussian parameters
   percent_dense: 0.01
 
-  # Optimization flags
+  # Optimization flags (actually enforced by trainers/trainer.py)
   optimize:
     position: true
     rotation: true

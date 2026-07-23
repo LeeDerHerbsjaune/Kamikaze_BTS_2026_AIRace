@@ -1,0 +1,4 @@
+[2026-07-21 10:35:16] Loaded checkpoint 'D:/Project/Model/Weights/AIRace/iter_5000_fixed.pth' at iteration 5000, 165123 Gaussians
+[2026-07-21 10:36:18] Loaded checkpoint 'D:/Project/Model/Weights/AIRace/iter_5000_fixed.pth' at iteration 5000, 165123 Gaussians
+[2026-07-21 10:36:39] Warning: dataset.target_views.file not found or empty - no novel views to render.
+[2026-07-21 10:39:57] Loaded checkpoint 'D:/Project/Model/Weights/AIRace/iter_5000_fixed.pth' at iteration 5000, 165123 Gaussians

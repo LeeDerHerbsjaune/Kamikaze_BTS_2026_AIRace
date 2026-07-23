@@ -1,8 +1,8 @@
 """
-Evaluation: đo chất lượng ảnh render trên tập validation (có ground truth,
-lấy từ 100-300 ảnh gốc, tách ra 1 phần làm eval) bằng PSNR, SSIM, LPIPS.
-Dùng để theo dõi hội tụ trong lúc train, KHÔNG dùng cho 20-50 novel views
-mục tiêu của đề bài vì các view đó không có ground truth.
+Evaluation: measures render quality on the validation split (has ground
+truth, held out from the 100-300 source images) via PSNR, SSIM, LPIPS.
+Used to track convergence during training, NOT for the 20-50 target novel
+views from the challenge - those views have no ground truth.
 """
 import torch
 from losses.loss import ssim as ssim_fn
@@ -21,7 +21,7 @@ def get_lpips_model(device="cuda"):
 
 @torch.no_grad()
 def evaluate_view(rendered: torch.Tensor, gt: torch.Tensor, use_lpips=True):
-    """rendered, gt: (3,H,W) trong [0,1]."""
+    """rendered, gt: (3,H,W) in [0,1]."""
     p = psnr_fn(rendered.unsqueeze(0), gt.unsqueeze(0)).mean().item()
     s = ssim_fn(rendered, gt).item()
     result = {"psnr": p, "ssim": s}
@@ -34,13 +34,16 @@ def evaluate_view(rendered: torch.Tensor, gt: torch.Tensor, use_lpips=True):
 
 @torch.no_grad()
 def evaluate_dataset(cameras, gaussians, render_fn, bg_color, use_lpips=True):
-    """Chạy evaluate trên toàn bộ tập eval_cameras, trả về giá trị trung bình."""
-    totals = {"psnr": 0.0, "ssim": 0.0, "lpips": 0.0}
+    """Runs evaluation over the whole eval_cameras split and returns the
+    average. Returns {} if there are no eval cameras (e.g. split ratio too
+    small)."""
+    if not cameras:
+        return {}
+    totals = {}
     n = len(cameras)
     for cam in cameras:
         out = render_fn(cam, gaussians, bg_color)
         metrics = evaluate_view(out["render"], cam.image.to(out["render"].device), use_lpips)
-        for k in totals:
-            if k in metrics:
-                totals[k] += metrics[k]
+        for k, v in metrics.items():
+            totals[k] = totals.get(k, 0.0) + v
     return {k: v / n for k, v in totals.items()}
