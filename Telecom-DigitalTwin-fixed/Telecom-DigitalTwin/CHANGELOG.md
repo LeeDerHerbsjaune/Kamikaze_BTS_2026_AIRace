@@ -260,3 +260,27 @@ Lệnh trên phải chạy không lỗi và in ra đầy đủ các section
       tăng từ 23,600 lên 102,306 phần tử (>4 lần), với đúng 6 Parameter mồ
       côi còn sót (khớp 6 param-group) - xác nhận cả bug lẫn cách test đều
       đúng, không phải false positive.
+
+## 🟢 Clamp anisotropy - khắc phục Gaussian dạng "kim" gây vệt sọc (lần 9)
+
+29. **Render novel view bị vệt sọc dài sáng/xám bất thường** (khác hẳn 2 lỗi
+    trước đó - vỡ nát do pose sai, hoặc đen do alpha thấp) - dấu hiệu kinh
+    điển của Gaussian bị optimizer kéo thành hình "kim" (1 trục rất dài, 2
+    trục còn lại gần như bằng 0). Từ góc nhìn khác hẳn train view (như target
+    novel view thường gặp), silhouette của 1 quả kim thay đổi cực mạnh theo
+    góc nhìn, chiếu lên màn hình thành vệt sọc dài thay vì 1 đốm mờ bình
+    thường.
+
+    Đã thêm `Trainer._clamp_anisotropy(max_ratio)`: sau MỖI
+    `optimizer.step()`, kéo trục ngắn nhất của mỗi Gaussian lên tối thiểu
+    bằng `trục dài nhất / max_ratio` (không đụng tới trục dài nhất - không
+    giới hạn kích thước bề mặt phẳng lớn hợp lệ như mái nhà, chỉ ngăn trục
+    ngắn co lại quá mức so với trục dài). Áp dụng trực tiếp lên `.data` dưới
+    `no_grad`, KHÔNG tạo `nn.Parameter` mới nên không đụng tới
+    `optimizer.state` (không lặp lại bug leak ở mục 28) - đã verify bằng
+    test so sánh state Adam trước/sau clamp giống hệt nhau.
+
+    Config mới `densify.max_anisotropy` (mặc định `10.0`, đặt `null`/`0` để
+    tắt). Đã test: Gaussian tỉ lệ 10000:1 bị kéo đúng về 10:1 (trục lớn nhất
+    giữ nguyên), Gaussian đẳng hướng hoặc dưới ngưỡng không bị đổi, và chạy
+    full training loop (mock renderer) với clamp bật không lỗi.

@@ -95,11 +95,23 @@ def _render_gsplat(camera, gaussians, bg_color, scaling_modifier):
 
     visibility_filter = radii > 0
 
+    # gsplat already computes per-pixel alpha (accumulated opacity along each
+    # ray) - previously discarded. Exposing it lets callers diagnose renders
+    # that look mostly black: LOW mean alpha means most rays never hit
+    # enough Gaussian coverage and are showing background color instead of
+    # scene content (e.g. camera pointed at a region with sparse/no
+    # reconstruction, or positioned much farther from the scene than the
+    # trained Gaussians were fit for) - very different root cause than
+    # "not trained enough", which would show a blurry-but-covered image
+    # instead of a mostly-black one.
+    alpha = render_alphas[0, ..., 0] if render_alphas is not None else None
+
     return {
         "render": image,
         "viewspace_points": viewspace_points,
         "visibility_filter": visibility_filter,
         "radii": radii,
+        "alpha": alpha,
     }
 
 
@@ -142,6 +154,10 @@ def _render_diffgs(camera, gaussians, bg_color, scaling_modifier):
         "viewspace_points": screenspace_points,
         "visibility_filter": radii > 0,
         "radii": radii,
+        # The classic diff-gaussian-rasterization API doesn't expose a
+        # per-pixel alpha/coverage channel directly - kept as None for a
+        # consistent dict shape between backends rather than omitting the key.
+        "alpha": None,
     }
 
 

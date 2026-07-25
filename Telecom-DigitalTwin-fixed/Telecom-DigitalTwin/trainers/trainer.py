@@ -58,8 +58,7 @@ _PARAM_TO_OPTIMIZE_FLAG = {
 
 
 class Trainer:
-    def __init__(self, cfg, gaussians, dataset, logger,
-                 resume_iteration: int = 0, resume_optimizer_state: dict = None):
+    def __init__(self, cfg, gaussians, dataset, logger):
         self.cfg = cfg
         self.gaussians = gaussians
         self.dataset = dataset
@@ -73,14 +72,6 @@ class Trainer:
             cfg, "training.checkpoint.directory", "./outputs/checkpoints")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-        # Whether to include the Adam optimizer state (exp_avg/exp_avg_sq) in
-        # every saved checkpoint, so a later --resume can restore momentum
-        # instead of restarting Adam from zero. Off by default since it
-        # roughly doubles+ checkpoint size (Adam keeps 2 extra tensors per
-        # parameter) - not worth the disk cost unless you actually expect to
-        # resume (e.g. training on a session-limited host like Kaggle).
-        self.save_optimizer_state = cfg_get(cfg, "training.save_optimizer_state", False)
-
         self.train_cams = list(dataset.train_cameras)
         if not self.train_cams:
             raise ValueError("dataset.train_cameras is empty - nothing to train on.")
@@ -89,37 +80,10 @@ class Trainer:
         # training summary to notes.md (see log_summary in train()).
         self.eval_history = []
 
-        # IMPORTANT: gaussians.create_from_pcd(...) (or gaussians.restore(...)
-        # when resuming) must have already run before constructing
-        # Trainer(...), since setup_training needs gaussians.xyz to already
-        # have its real size.
+        # IMPORTANT: gaussians.create_from_pcd(...) must have already run
+        # before constructing Trainer(...), since setup_training needs
+        # gaussians.xyz to already have its real size.
         self.setup_training(cfg)
-
-        # ---------------- Resume ----------------
-        # Continue the iteration counter from where the checkpoint left off
-        # (NOT restart at 1), so the lr schedule / sh-degree schedule /
-        # densify-prune-reset schedule - all driven by the ABSOLUTE iteration
-        # number below - stay consistent with the Gaussian state that was
-        # actually restored.
-        self.start_iteration = resume_iteration + 1
-        if resume_optimizer_state is not None:
-            try:
-                self.optimizer.load_state_dict(resume_optimizer_state)
-                self.logger.log_text(
-                    "Restored optimizer state (Adam momentum) from checkpoint - resuming seamlessly.")
-            except Exception as e:
-                self.logger.log_text(
-                    f"WARNING: could not restore optimizer state ({e}) - state doesn't match "
-                    f"the current param-group structure (e.g. different Gaussian count from "
-                    f"densify), falling back to a freshly-initialized optimizer. Gaussian "
-                    f"weights themselves are unaffected.")
-        elif resume_iteration > 0:
-            self.logger.log_text(
-                "Resuming without a saved optimizer state (checkpoint predates "
-                "training.save_optimizer_state=true, or it was off when that checkpoint was "
-                "saved) - Adam momentum restarts from zero. Gaussian weights are unaffected; "
-                "expect only a brief, minor dip/wobble in loss for the first few hundred "
-                "iterations after resume.")
 
     def train(self):
         cfg = self.cfg
@@ -141,47 +105,24 @@ class Trainer:
         split_factor = cfg_get(cfg, "densify.split_factor", 2)
         min_world_size_ratio = cfg_get(cfg, "densify.min_world_size_ratio", 1.0e-5)
         max_gaussians = cfg_get(cfg, "densify.max_gaussians", None)
+        max_anisotropy = cfg_get(cfg, "densify.max_anisotropy", 10.0)
 
         min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.005)
         opacity_reset_interval = cfg_get(cfg, "pruning.opacity.reset_interval", 3000)
-        # Stop periodically zeroing-out opacity once we're this far into
-        # training. Defaults to densify_until_iter: once density stops
-        # growing/pruning, a reset only destabilizes convergence with
-        # nothing gained, and - critically - a reset with no iterations
-        # left afterward to recover leaves the FINAL saved checkpoint stuck
-        # in its just-reset, near-invisible state. Confirmed from a real
-        # run's eval history: PSNR crashed to ~5.6 (from a normal ~18-19)
-        # at every iteration that was a common multiple of
-        # opacity_reset_interval (3000) and eval_interval (2000) - i.e.
-        # every 6000 iterations - and fully recovered ~2000 iterations
-        # later each time. Because reset_interval=3000 evenly divides
-        # iterations=30000, the very last reset landed exactly on the final
-        # iteration, so `last.pth` was saved mid-crash with no recovery
-        # time - not a training failure, just unlucky scheduling.
-        opacity_reset_until_iter = cfg_get(cfg, "pruning.opacity.reset_until_iter", densify_until_iter)
         max_screen_size = cfg_get(cfg, "pruning.size.max_screen", 20)
 
         prune_after_iter = cfg_get(cfg, "pruning.schedule.after_iter") or densify_from_iter
         prune_interval = cfg_get(cfg, "pruning.schedule.interval") or densify_interval
         min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", None)
 
-        if self.start_iteration > n_iters:
-            self.logger.log_text(
-                f"start_iteration ({self.start_iteration}) > training.iterations ({n_iters}) - "
-                f"the resumed checkpoint is already past the configured target, nothing to "
-                f"train further. Raise 'training.iterations' in the config if you want to "
-                f"continue training this run.")
-            return
-
-        pbar = tqdm(range(self.start_iteration, n_iters + 1), desc="Training")
+        pbar = tqdm(range(1, n_iters + 1), desc="Training")
         cam_pool = []
         train_start_time = time.time()
         last_log_time = train_start_time
         n_gaussians_before_run = self.gaussians.xyz.shape[0]
 
         self.logger.log_text(
-            f"Starting training: {n_iters} iterations"
-            f"{f' (resuming from iteration {self.start_iteration})' if self.start_iteration > 1 else ''}, "
+            f"Starting training: {n_iters} iterations, "
             f"{n_gaussians_before_run} initial Gaussians, "
             f"{len(self.train_cams)} train views, {len(self.dataset.eval_cameras)} eval views, "
             f"backend={self.backend}, densify={'on' if densify_enabled else 'off'}.")
@@ -239,6 +180,18 @@ class Trainer:
             # reference's training dynamics.
             self.optimizer.step()
 
+            # -------- Clamp anisotropy (prevent needle-shaped Gaussians) --------
+            # A Gaussian can be pushed by the optimizer into a degenerate
+            # "needle" shape (very long along one axis, near-zero along the
+            # others) - especially in areas with weak/ambiguous multi-view
+            # constraints. Visually this produces long thin streaks/flares
+            # in renders from viewpoints the needle happens to align with,
+            # since a needle's silhouette changes drastically with viewing
+            # angle instead of looking like a normal, bounded blob. Cheap
+            # elementwise op, safe to run every iteration.
+            if max_anisotropy and max_anisotropy > 0:
+                self._clamp_anisotropy(max_anisotropy)
+
             # -------- Densify / Prune on the main schedule --------
             with torch.no_grad():
                 if (densify_enabled
@@ -268,13 +221,8 @@ class Trainer:
                 if (iteration > prune_after_iter and iteration % prune_interval == 0):
                     self.prune_low_quality(min_opacity, min_visible_count=min_visible_count)
 
-                if (opacity_reset_interval and iteration % opacity_reset_interval == 0
-                        and iteration < min(opacity_reset_until_iter, n_iters)):
+                if opacity_reset_interval and iteration % opacity_reset_interval == 0:
                     self.reset_opacity()
-                    self.logger.log_text(
-                        f"[opacity-reset @ iter {iteration}] opacity forced back down to ~0.01 - "
-                        f"expect PSNR/SSIM to dip at the very next eval and recover over the "
-                        f"following ~1-2k iterations; this is expected, not a bug.")
 
             if iteration % log_interval == 0:
                 now = time.time()
@@ -352,12 +300,8 @@ class Trainer:
     def save_checkpoint(self, iteration, name=None):
         name = name or f"iter_{iteration}"
         path = os.path.join(self.checkpoint_dir, f"{name}.pth")
-        payload = {"iteration": iteration, "gaussians": self.gaussians.capture()}
-        if self.save_optimizer_state:
-            payload["optimizer"] = self.optimizer.state_dict()
-        torch.save(payload, path)
-        self.logger.log_text(
-            f"Saved checkpoint: {path}" + (" (with optimizer state)" if self.save_optimizer_state else ""))
+        torch.save({"iteration": iteration, "gaussians": self.gaussians.capture()}, path)
+        self.logger.log_text(f"Saved checkpoint: {path}")
 
         note = f"{self.gaussians.xyz.shape[0]} Gaussians"
         if self.eval_history and self.eval_history[-1][0] <= iteration:
@@ -443,6 +387,29 @@ class Trainer:
     # densify_and_split/densify_and_prune in the reference scene/gaussian_model.py:
     # thresholds, clone/split selection masks, and the split scale formula
     # `log(scaling / (0.8*N))` all match exactly.
+    def _clamp_anisotropy(self, max_ratio):
+        """Clamps the scale ratio (largest axis / smallest axis) of every
+        Gaussian to at most `max_ratio`, directly in the underlying
+        _scaling parameter (log-space). Pulls the SMALLEST axis/axes up to
+        `largest_axis / max_ratio` rather than pulling the largest axis
+        down - this shrinks the Gaussian's aspect ratio toward a more
+        isotropic blob without arbitrarily capping how large a genuinely
+        large flat surface (e.g. a rooftop) is allowed to be.
+
+        In-place on .data under no_grad - this is a hard post-step
+        constraint, not a differentiable loss term, and does NOT touch
+        Adam's momentum state in optimizer.state (unlike
+        _append_points/_prune_points/reset_opacity) since the parameter's
+        identity and shape don't change here, only some of its values are
+        pulled back within bounds.
+        """
+        with torch.no_grad():
+            s = self.gaussians.scaling  # (N,3) = exp(_scaling), the activated (positive) scale
+            s_max = s.max(dim=1, keepdim=True).values
+            s_min_allowed = s_max / max_ratio
+            s_clamped = torch.maximum(s, s_min_allowed)
+            self.gaussians._scaling.data = torch.log(s_clamped)
+
     def add_densification_stats(self, viewspace_point_grad, visibility_filter):
         self.gaussians.xyz_gradient_accum[visibility_filter] += torch.norm(
             viewspace_point_grad[visibility_filter, :2], dim=-1, keepdim=True)
