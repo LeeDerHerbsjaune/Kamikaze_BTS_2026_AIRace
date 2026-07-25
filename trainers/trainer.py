@@ -141,7 +141,7 @@ class Trainer:
         # rather than real geometry, since it was never cross-validated by
         # a second or third viewpoint. Targets the "Floating Gaussian"
         # artifact (visibility-based pruning).
-        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 3)
+        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 4)
 
         sh_reg_weight = cfg_get(cfg, "loss.sh_regularization.weight", 0.0)
 
