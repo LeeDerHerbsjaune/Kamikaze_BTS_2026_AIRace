@@ -235,7 +235,7 @@ class BTSDataset:
         # point to a different writable location (e.g. /kaggle/working/<scene>)
         # when auto-running SfM is needed. If unset, defaults to dataset.root
         # as before (fine for local use, where dataset.root is usually writable).
-        workspace_dir = cfg_get(self.cfg, "preprocessing.colmap.workspace") or self.data_root
+        workspace_dir = self.data_root
 
         if not sparse_ready:
             if not colmap_enabled:
