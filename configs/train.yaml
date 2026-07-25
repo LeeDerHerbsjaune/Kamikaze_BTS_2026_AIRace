@@ -102,7 +102,7 @@ pruning:
 
   opacity:
 
-    min: 0.005
+    min: 0.015
 
     reset_interval: 3000
 

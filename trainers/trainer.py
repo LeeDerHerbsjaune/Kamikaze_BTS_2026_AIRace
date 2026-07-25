@@ -113,7 +113,7 @@ class Trainer:
         # Gaussian blending over a wide image area). See _clamp_max_scale().
         max_scale_ratio = cfg_get(cfg, "densify.max_scale_ratio", 0.02)
 
-        min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.005)
+        min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.015)
         opacity_reset_interval = cfg_get(cfg, "pruning.opacity.reset_interval", 3000)
         # Stop periodically zeroing-out opacity once training is this far
         # along. Defaults to densify_until_iter: once density has stopped
@@ -141,7 +141,7 @@ class Trainer:
         # rather than real geometry, since it was never cross-validated by
         # a second or third viewpoint. Targets the "Floating Gaussian"
         # artifact (visibility-based pruning).
-        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 4)
+        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 6)
 
         sh_reg_weight = cfg_get(cfg, "loss.sh_regularization.weight", 0.0)
 
