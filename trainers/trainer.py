@@ -115,6 +115,22 @@ class Trainer:
 
         min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.005)
         opacity_reset_interval = cfg_get(cfg, "pruning.opacity.reset_interval", 3000)
+        # Stop periodically zeroing-out opacity once training is this far
+        # along. Defaults to densify_until_iter: once density has stopped
+        # growing/pruning, a reset only destabilizes an otherwise-converging
+        # model with nothing to gain - and critically, a reset with no
+        # iterations left afterward to recover leaves the FINAL saved
+        # checkpoint stuck in its just-reset, near-invisible state.
+        # CONFIRMED from real training logs (twice now): eval PSNR crashes
+        # to ~5.6 (from a normal ~18-19) at every iteration that's a common
+        # multiple of opacity_reset_interval and eval_interval, fully
+        # recovering ~1-2k iterations later each time. When
+        # opacity_reset_interval evenly divides training.iterations, the
+        # very last reset lands exactly on the final iteration, so
+        # last.pth/iter_<n_iters>.pth gets saved mid-crash - this is what
+        # produced the near-black renders reported so far, not a training
+        # failure or a bad checkpoint per se.
+        opacity_reset_until_iter = cfg_get(cfg, "pruning.opacity.reset_until_iter", densify_until_iter)
         max_screen_size = cfg_get(cfg, "pruning.size.max_screen", 20)
 
         prune_after_iter = cfg_get(cfg, "pruning.schedule.after_iter") or densify_from_iter
@@ -211,6 +227,16 @@ class Trainer:
             if max_anisotropy and max_anisotropy > 0:
                 self._clamp_anisotropy(max_anisotropy)
 
+            # -------- Clamp max scale (prevent "smearing") --------
+            # BUGFIX: this call was previously missing entirely - the
+            # config value (max_scale_ratio) was read above and the method
+            # itself was fully implemented, but never invoked, so oversized/
+            # high-opacity Gaussians could grow unchecked between densify
+            # events despite the docstring/comments describing this as an
+            # active per-iteration safeguard. See _clamp_max_scale().
+            if max_scale_ratio and max_scale_ratio > 0:
+                self._clamp_max_scale(max_scale_ratio * cached_extent)
+
             # -------- Densify / Prune on the main schedule --------
             with torch.no_grad():
                 if (densify_enabled
@@ -241,8 +267,13 @@ class Trainer:
                 if (iteration > prune_after_iter and iteration % prune_interval == 0):
                     self.prune_low_quality(min_opacity, min_visible_count=min_visible_count)
 
-                if opacity_reset_interval and iteration % opacity_reset_interval == 0:
+                if (opacity_reset_interval and iteration % opacity_reset_interval == 0
+                        and iteration < min(opacity_reset_until_iter, n_iters)):
                     self.reset_opacity()
+                    self.logger.log_text(
+                        f"[opacity-reset @ iter {iteration}] opacity forced back down to ~0.01 - "
+                        f"expect PSNR/SSIM to dip at the very next eval and recover over the "
+                        f"following ~1-2k iterations; this is expected, not a bug.")
 
             if iteration % log_interval == 0:
                 now = time.time()
