@@ -30,8 +30,23 @@ Telecom-DigitalTwin/
 │   ├── loss.yaml                     # loss weights + evaluation metrics
 │   ├── train.yaml                     # optimizer + training + densify/pruning
 │   └── inference.yaml                  # checkpoint + output + video
-├── datasets/bts_dataset.py     # load ảnh + pose (COLMAP hoặc transforms.json)
-├── preprocessing/colmap_utils.py  # đọc/ chạy SfM, normalize_scene
+├── dataloader/                 # ĐỌC dữ liệu thô -> Camera/Scene sẵn dùng cho Trainer
+│   ├── entities.py               # dataclass thuần: Camera/Image/Point3D/Frame/Scene
+│   │                              # (chỉ intrinsics/pose/point3D thô, KHÔNG biết config)
+│   ├── colmap.py                  # ColmapLoader: đọc sparse reconstruction qua
+│   │                              # `pycolmap` (KHÔNG tự viết tay parser .bin/.txt),
+│   │                              # thuần - không biết gì về config/resolution/normalize
+│   └── bts_dataset.py              # BTSDataset (entry point) + _TolerantColmapLoader:
+│                                    # lớp BỌC config-aware, cộng thêm vào ColmapLoader:
+│                                    #  - tự dò biến thể đuôi file ảnh, bỏ qua ảnh thiếu
+│                                    #  - resize ảnh theo dataset.images.resolution
+│                                    #  - tự chạy SfM qua pycolmap nếu chưa có sparse/
+│                                    #    (extract_features -> match_exhaustive ->
+│                                    #    incremental_mapping - KHÔNG cần cài CLI `colmap`!)
+│                                    #  - normalize_scene, train/eval split, target views
+├── preprocessing/colmap_utils.py  # CHỈ còn normalize_scene() - tiện ích thuần toán học
+│                                    # dùng chung, không liên quan đọc/ghi file. Việc đọc
+│                                    # COLMAP đã chuyển hết sang dataloader/colmap.py.
 ├── models/gaussian_model.py    # 3D Gaussian: xyz, scale, rotation, opacity, SH
 ├── renderer/gaussian_renderer.py  # rasterizer khả vi (gsplat / diff-gaussian)
 ├── losses/loss.py              # L1 + SSIM
@@ -44,9 +59,39 @@ Telecom-DigitalTwin/
 └── train.py                    # entry point nối toàn bộ pipeline
 ```
 
-**Lưu ý:** thư mục `models/gaussian/` (stub rỗng) và `datasets/entities.py`
-/ `datasets/colmap_loader.py` (pipeline song song, không tương thích renderer)
-đã được loại bỏ khỏi bản này — xem lý do trong `CHANGELOG.md` mục 7–8.
+**`dataloader/` vs `preprocessing/` khác nhau ở đâu?**
+- `dataloader/` = biết cách **đọc** dữ liệu (ảnh, pose, point cloud) từ đĩa và
+  ghép thành đối tượng Python sẵn dùng. `colmap.py` (đọc thuần qua pycolmap)
+  tách biệt khỏi `bts_dataset.py` (lớp bọc thêm mọi hành vi phụ thuộc config:
+  resize, tolerant-missing-file, auto-SfM, normalize, split) - tách theo
+  nguyên tắc 1 lớp thuần (dễ test/tái dùng) + 1 lớp cấu hình (biết `cfg`).
+- `preprocessing/` = tiện ích **xử lý số liệu thuần tuý**, không đọc/ghi file,
+  không phụ thuộc định dạng dữ liệu gốc. Hiện chỉ còn `normalize_scene()`
+  (đưa scene về tâm + scale theo bán kính camera) vì đây là phép biến đổi áp
+  dụng SAU khi đã có Camera/point cloud, bất kể chúng đến từ COLMAP hay
+  transforms.json.
+
+**Lưu ý:** thư mục `models/gaussian/` (stub rỗng), `datasets/` (kiến trúc cũ
+đọc COLMAP bằng parser tự viết tay), và `datasets/entities.py`/
+`datasets/colmap_loader.py` (bản nháp trước đó của `dataloader/`, không tương
+thích renderer) đã được loại bỏ khỏi bản này — xem lý do và lịch sử đầy đủ
+trong `CHANGELOG.md`.
+
+## Ghi log & theo dõi kết quả
+
+Mỗi lần chạy `train.py`/`scripts/render.sh` tạo trong
+`outputs/<experiment_name>/`:
+- **`train.log`** — log dạng dòng, có timestamp, gồm cả các dòng `[progress]`
+  (loss, n_gaussians, it/s, ETA, learning rate ghi mỗi `log_interval`) và
+  `[densify @ iter N]` (số Gaussian trước/sau mỗi lần densify).
+- **`notes.md`** — bảng markdown liệt kê MỌI file kết quả sinh ra (checkpoint,
+  `point_cloud_final.ply`, `camera_trajectory.png`, ảnh + video novel view),
+  kèm iteration, kích thước file, và eval metric gần nhất tại thời điểm đó.
+  Có thêm khối "Tổng kết" ở cuối training/inference (tổng thời gian, PSNR tốt
+  nhất, v.v.) - đọc nhanh file này để biết 1 lần chạy đã tạo ra những gì mà
+  không cần lục cả `train.log`.
+- **TensorBoard** (nếu cài `tensorboard`) — cùng thư mục, xem bằng
+  `tensorboard --logdir outputs/<experiment_name>`.
 
 ## Chuẩn bị dữ liệu
 
@@ -64,9 +109,12 @@ preprocessing:
   colmap:
     enabled: true
 ```
-để tự động chạy SfM (`feature_extractor -> exhaustive_matcher -> mapper`).
+để tự động chạy SfM qua thư viện `pycolmap` (`extract_features ->
+match_exhaustive -> incremental_mapping`) — **không cần cài đặt COLMAP CLI**
+riêng, chỉ cần `pip install pycolmap` (đã có trong `requirements.txt`). Phù
+hợp cả trên Kaggle, nơi không có sẵn `colmap.exe`/binary trong PATH.
 
-Định dạng `target_poses.json`:
+Định dạng `target_poses.json` (hoặc `target_poses.csv` — xem bên dưới):
 ```json
 [
   {"name": "target_001", "R": [[...]], "T": [tx, ty, tz],
@@ -76,6 +124,35 @@ preprocessing:
 Pose này ở hệ toạ độ COLMAP gốc — nếu `preprocessing.normalize_scene: true`,
 pipeline sẽ tự áp cùng phép chuẩn hoá scene lên target pose trước khi render,
 bạn **không cần tự normalize file này**.
+
+**Nếu đề bài cấp target view dưới dạng `.csv` thay vì `.json`**, chỉ cần trỏ
+`dataset.target_views.file` sang tên file `.csv` — pipeline tự nhận diện qua
+đuôi file. Tên cột được so khớp không phân biệt hoa/thường, dấu gạch dưới hay
+khoảng trắng, chấp nhận nhiều biến thể phổ biến:
+
+| Nhóm | Các tên cột được chấp nhận |
+|---|---|
+| Tên ảnh | `name` / `image_name` / `target_name` / `id` / `filename` |
+| Rotation | `qw,qx,qy,qz` (quaternion) **hoặc** `r00..r22` (ma trận 3x3 phẳng) |
+| Translation | `tx,ty,tz` (hoặc `x,y,z`) |
+| Field of view | `fovx,fovy` (radian) **hoặc** `fx,fy` (tự tính FoV từ `width/height`) |
+| Kích thước | `width`/`w`/`img_width` và `height`/`h`/`img_height` |
+
+Nếu file CSV của bạn dùng tên cột khác các alias trên, pipeline sẽ báo lỗi rõ
+ràng liệt kê cột nào còn thiếu + toàn bộ cột thực tế phát hiện được trong
+file, giúp dễ đối chiếu và báo lại để bổ sung alias mới.
+
+**Nếu render novel view ra một đám ellipsoid vỡ nát** (trông như camera đang
+ở bên trong scene thay vì nhìn từ xa), gần như chắc chắn là do sai convention
+pose camera — thử đổi:
+```yaml
+dataset:
+  target_views:
+    pose_convention: "cam_to_world"   # mặc định "world_to_cam"
+```
+Pipeline cũng tự in cảnh báo ngay lúc load dataset (trước khi train) nếu phát
+hiện target camera nằm ở khoảng cách bất thường so với train camera — không
+cần đợi render xong mới biết bị sai.
 
 ## Chạy training + inference end-to-end
 

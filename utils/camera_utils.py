@@ -1,7 +1,7 @@
 """
-Camera utilities: chuyển đổi pose (R, T) và intrinsics (fx, fy, cx, cy)
-sang các ma trận view/projection dùng cho renderer, và class Camera đại diện
-cho 1 view (train/eval/novel).
+Camera utilities: convert pose (R, T) and intrinsics (fx, fy, cx, cy) into
+the view/projection matrices the renderer needs, plus the Camera class
+representing a single view (train/eval/novel).
 """
 import numpy as np
 import torch
@@ -47,7 +47,7 @@ def getProjectionMatrix(znear, zfar, fovX, fovY):
 
 
 class Camera:
-    """Đại diện cho 1 camera view (ảnh + pose + intrinsics)."""
+    """Represents a single camera view (image + pose + intrinsics)."""
 
     def __init__(self, uid, R, T, FoVx, FoVy, image, image_name,
                  width=None, height=None, znear=0.01, zfar=100.0, device="cuda"):
@@ -57,13 +57,13 @@ class Camera:
         self.FoVx = FoVx
         self.FoVy = FoVy
         self.image_name = image_name
-        self.image = image      # (3,H,W) tensor float [0,1] hoặc None cho novel view
+        self.image = image      # (3,H,W) float tensor [0,1], or None for a novel view
         self.width = width if width is not None else (image.shape[2] if image is not None else None)
         self.height = height if height is not None else (image.shape[1] if image is not None else None)
         if self.width is None or self.height is None:
             raise ValueError(
-                f"Camera '{image_name}': cần width/height tường minh khi image=None "
-                f"(novel view không có ground truth để suy ra kích thước ảnh).")
+                f"Camera '{image_name}': width/height must be given explicitly when "
+                f"image=None (a novel view has no ground truth to infer size from).")
         self.znear = znear
         self.zfar = zfar
         self.device = device
@@ -80,7 +80,8 @@ class Camera:
 
 
 def cameras_extent(cam_list):
-    """Ước lượng bán kính scene (dùng làm spatial_lr_scale và chuẩn hoá densify)."""
+    """Estimate the scene radius (used as spatial_lr_scale and to normalize
+    densify thresholds)."""
     centers = np.stack([c.camera_center.cpu().numpy() for c in cam_list])
     center = centers.mean(axis=0)
     dist = np.linalg.norm(centers - center, axis=1)

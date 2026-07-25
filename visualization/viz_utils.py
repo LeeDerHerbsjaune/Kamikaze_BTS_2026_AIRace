@@ -1,12 +1,12 @@
 """
-Visualization: hỗ trợ kiểm tra định tính chất lượng reconstruction -
-xuất point cloud Gaussian ra .ply để mở bằng viewer (viser, SuperSplat,
-CloudCompare), và vẽ quỹ đạo camera (train/eval/target) để kiểm tra coverage
-góc nhìn quanh trạm BTS.
+Visualization: helpers for a qualitative check of reconstruction quality -
+export the Gaussian point cloud to .ply for viewing in an external tool
+(viser, SuperSplat, CloudCompare), and plot the camera trajectory
+(train/eval/target) to check view-angle coverage around the BTS site.
 """
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")  # tránh lỗi khi chạy trên máy/server không có display
+matplotlib.use("Agg")  # avoid errors when running on a machine/server with no display
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
@@ -26,19 +26,20 @@ def plot_camera_trajectory(train_cams, eval_cams=None, target_cams=None, save_pa
     _plot(target_cams, "tab:red", "Target novel views")
 
     ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-    ax.set_title("Phân bố góc nhìn camera quanh trạm BTS")
+    ax.set_title("Camera viewpoint distribution around the BTS site")
     ax.legend()
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Đã lưu biểu đồ quỹ đạo camera: {save_path}")
+        print(f"Saved camera trajectory plot: {save_path}")
     else:
         plt.show()
     plt.close(fig)
 
 
 def side_by_side_comparison(rendered, gt, save_path):
-    """So sánh trực quan ảnh render vs ground truth (dùng cho tập eval)."""
+    """Visual side-by-side comparison of a rendered image vs ground truth
+    (used for the eval split)."""
     import torch
     r = rendered.clamp(0, 1).permute(1, 2, 0).cpu().numpy()
     g = gt.clamp(0, 1).permute(1, 2, 0).cpu().numpy() if isinstance(gt, torch.Tensor) else gt

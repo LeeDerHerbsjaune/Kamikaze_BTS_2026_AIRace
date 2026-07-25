@@ -1,5 +1,5 @@
 # ==========================================================
-# Training Configuration and optimization hyperparameters
+# Training Configuration
 # ==========================================================
 
 training:
@@ -72,7 +72,27 @@ densify:
   clone_factor: 2
   split_factor: 2
   min_world_size_ratio: 0.00001
-  max_gaussians: null
+  # Trần an toàn cho tổng số Gaussian. Để null = không giới hạn (mặc định
+  # gốc), nhưng trên GPU VRAM hạn chế (Kaggle T4/P100 ~16GB), số Gaussian có
+  # thể tăng không kiểm soát qua densify (clone+split) tới khi CUDA OOM giữa
+  # chừng training, MẤT HẾT tiến trình đã chạy. Đặt 1 con số cụ thể (vd
+  # 400000) để Trainer tự loại bớt Gaussian opacity thấp nhất khi vượt trần,
+  # thay vì để crash. 400000 chỉ là điểm khởi đầu - không phải con số đảm
+  # bảo an toàn tuyệt đối (còn phụ thuộc dataset.images.resolution, số ảnh,
+  # sh_degree...); tăng/giảm dựa trên VRAM còn trống thực tế bạn quan sát
+  # được qua nvidia-smi trong lúc train.
+  max_gaussians: 400000
+
+  # Trần tỉ lệ (trục dài nhất / trục ngắn nhất) cho phép trên mỗi Gaussian.
+  # Nếu không giới hạn, optimizer có thể kéo 1 Gaussian thành hình "kim" cực
+  # mỏng (vd scale [10, 0.001, 0.001]) - từ 1 vài góc nhìn nhất định, quả
+  # kim này chiếu lên màn hình thành vệt sọc dài sáng/xám bất thường (đúng
+  # kiểu artifact "vệt sọc" hay gặp ở target novel view, vì góc nhìn đó khác
+  # hẳn các train view mà optimizer đã quen). Sau MỖI optimizer.step(), kéo
+  # trục ngắn nhất lên tối thiểu bằng `trục dài nhất / max_anisotropy` -
+  # KHÔNG bao giờ đụng tới trục dài nhất, chỉ ngăn trục ngắn co lại quá mức.
+  # Để null hoặc 0 để tắt (không giới hạn, giống 3DGS gốc).
+  max_anisotropy: 10.0
 
 # ==========================================================
 # Gaussian Pruning

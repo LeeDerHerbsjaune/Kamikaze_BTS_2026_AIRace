@@ -1,7 +1,13 @@
 """
-GaussianModel: biểu diễn scene bằng tập điểm 3D Gaussian có thể học được
-(vị trí, scale, rotation, opacity, hệ số SH cho màu view-dependent).
-Chỉ là data container thuần - toàn bộ optimizer/densify logic thuộc về Trainer.
+GaussianModel: holds the learnable 3D Gaussian point set (position, scale,
+rotation, opacity, SH coefficients for view-dependent color).
+Pure data container - all optimizer/densify logic lives in Trainer, not here
+(cross-checked against the reference scene/gaussian_model.py from
+graphdeco-inria/gaussian-splatting: activations, densify formulas and the
+create_from_pcd initialization order all match; see inline notes below for
+the couple of places we deliberately deviate, e.g. no CUDA simple_knn
+extension available so nearest-neighbor distance is approximated in pure
+PyTorch).
 """
 import torch
 import torch.nn as nn
@@ -26,7 +32,7 @@ class GaussianModel:
         self._rotation = torch.empty(0, device=device)
         self._opacity = torch.empty(0, device=device)
 
-        # Các biến này sẽ được khởi tạo kích thước thật bên phía Trainer
+        # Resized to their real shape by Trainer once the point count is known.
         self.xyz_gradient_accum = torch.empty(0, device=device)
         self.denom = torch.empty(0, device=device)
         self.max_radii2D = torch.empty(0, device=device)
@@ -34,6 +40,8 @@ class GaussianModel:
         self.spatial_lr_scale = 1.0
 
     # ---------------- Activations ----------------
+    # Same activation functions as the reference GaussianModel.setup_functions():
+    # exp for scaling, sigmoid for opacity, normalize for rotation quaternion.
     @property
     def scaling(self):
         return torch.exp(self._scaling)
@@ -63,24 +71,38 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    # ---------------- Init từ point cloud (SfM hoặc random) ----------------
+    # ---------------- Init from point cloud (SfM or random) ----------------
     def create_from_pcd(self, xyz: np.ndarray, rgb: np.ndarray, spatial_lr_scale: float,
                          opacity_init: float = 0.1, scale_init_factor: float = 1.0):
-        """opacity_init/scale_init_factor mặc định khớp configs/gaussian.yaml
-        (model.init.opacity, model.init.scale_factor) - train.py truyền trực
-        tiếp 2 giá trị này từ config thay vì hard-code."""
+        """opacity_init/scale_init_factor default to configs/gaussian.yaml
+        (model.init.opacity, model.init.scale_factor) - train.py passes these
+        in from config instead of hard-coding them. `scale_init_factor=1.0`
+        reproduces the reference's exact formula (no extra multiplier there);
+        it's a knob we added on top, not present in the original repo.
+
+        `rgb` must already be normalized to [0,1] - RGB2SH() below assumes
+        that range (dataloader/bts_dataset.py is responsible for converting
+        the raw uint8 [0,255] COLMAP point color before calling this)."""
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(xyz, dtype=torch.float32, device=self.device)
         fused_color = RGB2SH(torch.tensor(rgb, dtype=torch.float32, device=self.device))
 
         n = fused_point_cloud.shape[0]
-        # features: (N, 3 kênh RGB, num_sh_bases). Chỉ set hệ số SH bậc 0 (DC,
-        # index cuối = 0) bằng màu quan sát được; các bậc cao hơn (index 1:)
-        # để 0 vì torch.zeros() đã khởi tạo sẵn - model sẽ tự học dần trong
-        # lúc train khi active_sh_degree tăng lên (xem oneup_sh_degree()).
+        # features: (N, 3 RGB channels, num_sh_bases). Only the degree-0 (DC)
+        # SH coefficient is set from the observed color; higher-order bands
+        # are left at 0 (torch.zeros() default) and get learned as training
+        # progresses and active_sh_degree increases (see oneup_sh_degree()).
+        # Matches reference: `features[:, :3, 0] = fused_color; features[:, 3:, 1:] = 0.0`.
         features = torch.zeros((n, 3, num_sh_bases(self.max_sh_degree)), device=self.device)
         features[:, :, 0] = fused_color
 
+        # Reference computes `dist2 = distCUDA2(points)` via the compiled
+        # `simple_knn` CUDA extension, which returns the MEAN OF SQUARED
+        # distances to each point's 3 nearest neighbors (not the square of
+        # the mean distance - these differ by Jensen's inequality). We don't
+        # ship that CUDA extension, so `_nn_dist_squared()` below approximates
+        # it in pure PyTorch via `torch.cdist` + topk, matching that same
+        # "mean of squared distances" semantics.
         dist2 = torch.clamp_min(self._nn_dist_squared(fused_point_cloud), 1e-7)
         scales = torch.log(torch.sqrt(dist2) * scale_init_factor)[..., None].repeat(1, 3)
         rots = torch.zeros((n, 4), device=self.device)
@@ -101,19 +123,29 @@ class GaussianModel:
 
     @staticmethod
     def _nn_dist_squared(points, k=3):
+        """Pure-PyTorch stand-in for the reference's CUDA `distCUDA2`
+        (from the `simple_knn` submodule): for each point, the mean of the
+        SQUARED Euclidean distances to its `k` nearest neighbors (k=3,
+        matching the reference). Chunked over `cdist` to bound peak memory
+        for large point clouds; not as fast as the CUDA kernel but gives the
+        same statistic."""
         from torch import cdist
         chunks = []
         chunk_size = 4096
         for i in range(0, points.shape[0], chunk_size):
             d = cdist(points[i:i + chunk_size], points)
-            knn = d.topk(k + 1, largest=False).values[:, 1:]
-            chunks.append(knn.mean(dim=1) ** 2)
+            knn = d.topk(k + 1, largest=False).values[:, 1:]  # drop self (distance 0)
+            chunks.append(knn.pow(2).mean(dim=1))
         return torch.cat(chunks)
 
     # ---------------- Checkpoint ----------------
     def capture(self) -> dict:
-        """Snapshot đầy đủ để Trainer lưu checkpoint - đủ để resume training
-        (không chỉ để render), nên giữ cả spatial_lr_scale và max_radii2D."""
+        """Full snapshot for Trainer to checkpoint - sufficient to resume
+        training (not just to render), so keep spatial_lr_scale and
+        max_radii2D too. (Reference returns a tuple incl. optimizer state
+        dict via GaussianModel.capture()/restore(); we keep the same idea
+        but store optimizer state on the Trainer side instead, and use a
+        dict here for clarity.)"""
         return {
             "xyz": self._xyz.detach().cpu(),
             "f_dc": self._features_dc.detach().cpu(),
@@ -141,8 +173,11 @@ class GaussianModel:
         self.max_radii2D = state.get("max_radii2D", default_radii).to(self.device)
 
     def save_ply(self, path: str):
-        """Xuất point cloud (vị trí + màu DC) ra .ply để xem trong viewer
-        (viser/supersplat/CloudCompare)."""
+        """Export the point cloud (position + DC color) to .ply for viewing
+        in an external viewer (viser/SuperSplat/CloudCompare). Reference's
+        save_ply() also stores normals (zeros) and full SH; we only keep
+        position + DC color here since that's all downstream viewers used
+        in this project actually need."""
         xyz = self._xyz.detach().cpu().numpy()
         rgb = (SH2RGB(self._features_dc[:, 0, :].detach().cpu())
                .clamp(0, 1).numpy() * 255).astype(np.uint8)
