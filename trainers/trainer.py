@@ -104,7 +104,7 @@ class Trainer:
         clone_factor = cfg_get(cfg, "densify.clone_factor", 2)
         split_factor = cfg_get(cfg, "densify.split_factor", 2)
         min_world_size_ratio = cfg_get(cfg, "densify.min_world_size_ratio", 1.0e-5)
-        max_world_ratio = cfg_get(cfg, "pruning.size.max_world_ratio", 0.1)
+        max_world_ratio = cfg_get(cfg, "pruning.size.max_world_ratio", 0.03)
         max_gaussians = cfg_get(cfg, "densify.max_gaussians", None)
         max_anisotropy = cfg_get(cfg, "densify.max_anisotropy", 8.0)
         # Same threshold as pruning's max_world_ratio, but applied as an
