@@ -104,14 +104,14 @@ class Trainer:
         clone_factor = cfg_get(cfg, "densify.clone_factor", 2)
         split_factor = cfg_get(cfg, "densify.split_factor", 2)
         min_world_size_ratio = cfg_get(cfg, "densify.min_world_size_ratio", 1.0e-5)
-        max_world_ratio = cfg_get(cfg, "pruning.size.max_world_ratio", 0.03)
+        max_world_ratio = cfg_get(cfg, "pruning.size.max_world_ratio", 0.05)
         max_gaussians = cfg_get(cfg, "densify.max_gaussians", None)
-        max_anisotropy = cfg_get(cfg, "densify.max_anisotropy", 8.0)
+        max_anisotropy = cfg_get(cfg, "densify.max_anisotropy", 7.0)
         # Same threshold as pruning's max_world_ratio, but applied as an
         # ACTIVE, continuous shrink every iteration rather than only at
         # densify events - targets "Smearing" (oversized + high-opacity
         # Gaussian blending over a wide image area). See _clamp_max_scale().
-        max_scale_ratio = cfg_get(cfg, "densify.max_scale_ratio", 0.02)
+        max_scale_ratio = cfg_get(cfg, "densify.max_scale_ratio", 0.06)
 
         min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.015)
         opacity_reset_interval = cfg_get(cfg, "pruning.opacity.reset_interval", 3000)
@@ -141,7 +141,7 @@ class Trainer:
         # rather than real geometry, since it was never cross-validated by
         # a second or third viewpoint. Targets the "Floating Gaussian"
         # artifact (visibility-based pruning).
-        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 6)
+        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 5)
 
         sh_reg_weight = cfg_get(cfg, "loss.sh_regularization.weight", 0.0)
 
