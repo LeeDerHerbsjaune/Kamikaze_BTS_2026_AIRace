@@ -104,8 +104,14 @@ class Trainer:
         clone_factor = cfg_get(cfg, "densify.clone_factor", 2)
         split_factor = cfg_get(cfg, "densify.split_factor", 2)
         min_world_size_ratio = cfg_get(cfg, "densify.min_world_size_ratio", 1.0e-5)
+        max_world_ratio = cfg_get(cfg, "pruning.size.max_world_ratio", 0.1)
         max_gaussians = cfg_get(cfg, "densify.max_gaussians", None)
         max_anisotropy = cfg_get(cfg, "densify.max_anisotropy", 10.0)
+        # Same threshold as pruning's max_world_ratio, but applied as an
+        # ACTIVE, continuous shrink every iteration rather than only at
+        # densify events - targets "Smearing" (oversized + high-opacity
+        # Gaussian blending over a wide image area). See _clamp_max_scale().
+        max_scale_ratio = cfg_get(cfg, "densify.max_scale_ratio", 0.1)
 
         min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.005)
         opacity_reset_interval = cfg_get(cfg, "pruning.opacity.reset_interval", 3000)
@@ -113,13 +119,26 @@ class Trainer:
 
         prune_after_iter = cfg_get(cfg, "pruning.schedule.after_iter") or densify_from_iter
         prune_interval = cfg_get(cfg, "pruning.schedule.interval") or densify_interval
-        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", None)
+        # Default 3 (not None/disabled): a Gaussian seen in fewer than 3
+        # training views is very likely a "Floating Gaussian" - a spurious
+        # point hallucinated to explain a single view's parallax/noise
+        # rather than real geometry, since it was never cross-validated by
+        # a second or third viewpoint. Targets the "Floating Gaussian"
+        # artifact (visibility-based pruning).
+        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 3)
+
+        sh_reg_weight = cfg_get(cfg, "loss.sh_regularization.weight", 0.0)
 
         pbar = tqdm(range(1, n_iters + 1), desc="Training")
         cam_pool = []
         train_start_time = time.time()
         last_log_time = train_start_time
         n_gaussians_before_run = self.gaussians.xyz.shape[0]
+        # Cached once (train cameras are fixed for the whole run) instead of
+        # recomputed every iteration - only the max-scale clamp needs it on
+        # every step; the densify block already (re)computes its own fresh
+        # copy every densify.interval iterations via self._scene_extent().
+        cached_extent = self._scene_extent()
 
         self.logger.log_text(
             f"Starting training: {n_iters} iterations, "
@@ -211,7 +230,8 @@ class Trainer:
                         densify_grad_threshold, min_opacity, extent, screen_size_active,
                         clone_factor=clone_factor, split_factor=split_factor,
                         min_world_size_ratio=min_world_size_ratio,
-                        max_gaussians=max_gaussians)
+                        max_gaussians=max_gaussians,
+                        max_world_ratio=max_world_ratio)
                     n_after = self.gaussians.xyz.shape[0]
                     self.logger.log_text(
                         f"[densify @ iter {iteration}] n_gaussians: {n_before} -> {n_after} "
@@ -410,6 +430,29 @@ class Trainer:
             s_clamped = torch.maximum(s, s_min_allowed)
             self.gaussians._scaling.data = torch.log(s_clamped)
 
+    def _clamp_max_scale(self, max_scale_world):
+        """Actively shrinks any Gaussian axis exceeding `max_scale_world`
+        (absolute world-space units, typically max_world_ratio * scene
+        extent) back down to that limit, in-place on _scaling (log-space),
+        every iteration.
+
+        Targets "smearing": a Gaussian that grows very large AND has high
+        opacity covers a wide area of the image with heavy blending
+        weight, smearing detail across a broad region instead of
+        representing a compact surface patch. Pruning
+        (pruning.size.max_world_ratio, applied only at densify events,
+        every densify.interval iterations) removes the worst offenders,
+        but a Gaussian can grow oversized in the many iterations BETWEEN
+        two densify events; this active clamp keeps it bounded
+        continuously instead of only being able to react at those
+        boundaries. Same no-grad/.data/no-optimizer-state-touching
+        approach as _clamp_anisotropy - see that method's docstring.
+        """
+        with torch.no_grad():
+            s = self.gaussians.scaling
+            s_clamped = torch.clamp(s, max=max_scale_world)
+            self.gaussians._scaling.data = torch.log(s_clamped.clamp_min(1e-8))
+
     def add_densification_stats(self, viewspace_point_grad, visibility_filter):
         self.gaussians.xyz_gradient_accum[visibility_filter] += torch.norm(
             viewspace_point_grad[visibility_filter, :2], dim=-1, keepdim=True)
@@ -417,13 +460,14 @@ class Trainer:
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size,
                           clone_factor=2, split_factor=2,
-                          min_world_size_ratio=1.0e-5, max_gaussians=None):
+                          min_world_size_ratio=1.0e-5, max_gaussians=None,
+                          max_world_ratio=0.1):
         grads = self.gaussians.xyz_gradient_accum / self.gaussians.denom.clamp_min(1)
         grads = torch.nan_to_num(grads, nan=0.0)
 
         if max_gaussians is not None and self.gaussians._xyz.shape[0] >= max_gaussians:
             self._prune_points(self._extra_prune_mask(min_opacity, max_screen_size,
-                                                        extent, min_world_size_ratio))
+                                                        extent, min_world_size_ratio, max_world_ratio))
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             return
@@ -431,7 +475,7 @@ class Trainer:
         self._densify_and_clone(grads, max_grad, extent, clone_factor)
         self._densify_and_split(grads, max_grad, extent, split_factor)
 
-        prune_mask = self._extra_prune_mask(min_opacity, max_screen_size, extent, min_world_size_ratio)
+        prune_mask = self._extra_prune_mask(min_opacity, max_screen_size, extent, min_world_size_ratio, max_world_ratio)
         self._prune_points(prune_mask)
 
         if max_gaussians is not None and self.gaussians._xyz.shape[0] > max_gaussians:
@@ -444,11 +488,11 @@ class Trainer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def _extra_prune_mask(self, min_opacity, max_screen_size, extent, min_world_size_ratio):
+    def _extra_prune_mask(self, min_opacity, max_screen_size, extent, min_world_size_ratio, max_world_ratio=0.1):
         prune_mask = (self.gaussians.opacity < min_opacity).squeeze(-1)
         if max_screen_size:
             big_points_vs = self.gaussians.max_radii2D > max_screen_size
-            big_points_ws = self.gaussians.scaling.max(dim=1).values > 0.1 * extent
+            big_points_ws = self.gaussians.scaling.max(dim=1).values > max_world_ratio * extent
             prune_mask = prune_mask | big_points_vs | big_points_ws
         # NOTE: this tiny-point removal criterion is NOT present in the
         # reference implementation - it's an addition of ours to clean up
