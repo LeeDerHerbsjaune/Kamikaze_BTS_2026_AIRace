@@ -4,7 +4,7 @@
 
 training:
 
-  iterations: 30000
+  iterations: 50000
 
   log_interval: 50
 
@@ -63,7 +63,7 @@ densify:
 
   from_iter: 500
 
-  until_iter: 15000
+  until_iter: 20000
 
   interval: 100
 
@@ -81,7 +81,7 @@ densify:
   # bảo an toàn tuyệt đối (còn phụ thuộc dataset.images.resolution, số ảnh,
   # sh_degree...); tăng/giảm dựa trên VRAM còn trống thực tế bạn quan sát
   # được qua nvidia-smi trong lúc train.
-  max_gaussians: 800000
+  max_gaussians: 2000000
 
   # Trần tỉ lệ (trục dài nhất / trục ngắn nhất) cho phép trên mỗi Gaussian.
   # Nếu không giới hạn, optimizer có thể kéo 1 Gaussian thành hình "kim" cực
