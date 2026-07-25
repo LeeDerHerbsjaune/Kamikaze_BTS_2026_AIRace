@@ -208,7 +208,15 @@ class BTSDataset:
         set (e.g. on Kaggle, where dataset.root lives under the read-only
         /kaggle/input), also checks sparse/ inside that workspace - so a
         later run can reuse SfM results from a previous run instead of
-        re-running SfM from scratch."""
+        re-running SfM from scratch.
+
+        Returns (best_guess_dir, all_candidates_checked) - the second value
+        is only used to produce a clear error message listing every
+        location that was actually checked, since previously the error
+        only showed the FIRST candidate, which was confusing when
+        'preprocessing.colmap.workspace' is set (the workspace candidates
+        are checked first, so a dataset.root that DOES have a valid
+        sparse/0 would never even be mentioned in the error text)."""
         candidates = []
         workspace = cfg_get(self.cfg, "preprocessing.colmap.workspace")
         if workspace:
@@ -219,12 +227,12 @@ class BTSDataset:
 
         for candidate in candidates:
             if self._has_colmap_files(candidate):
-                return candidate
-        return candidates[0]  # default to the preferred path, for a clear error message later
+                return candidate, candidates
+        return candidates[0], candidates  # default to the preferred path, for a clear error message later
 
     # ------------------------------------------------------------------
     def _load_colmap(self):
-        sparse_dir = self._resolve_sparse_dir()
+        sparse_dir, checked_candidates = self._resolve_sparse_dir()
         colmap_enabled = cfg_get(self.cfg, "preprocessing.colmap.enabled", False)
         sparse_ready = self._has_colmap_files(sparse_dir)
         images_dir = os.path.join(self.data_root, cfg_get(self.cfg, "dataset.images.directory", "images"))
@@ -239,15 +247,17 @@ class BTSDataset:
 
         if not sparse_ready:
             if not colmap_enabled:
+                checked_str = "\n".join(f"  - {c}" for c in checked_candidates)
                 raise FileNotFoundError(
                     f"Could not find a complete sparse reconstruction (cameras/images/points3D, "
-                    f".bin or .txt) at '{sparse_dir}'.\n"
-                    f"Check 'dataset.root' in configs/dataset.yaml, or if you haven't "
-                    f"run SfM yet, set 'preprocessing.colmap.enabled: true' to automatically "
-                    f"run SfM via pycolmap (just needs `pip install pycolmap`, no need "
-                    f"to install the COLMAP CLI/PATH). If 'dataset.root' is read-only "
-                    f"(e.g. /kaggle/input), also set 'preprocessing.colmap.workspace' to "
-                    f"point at a writable directory.")
+                    f".bin or .txt) in any of the following locations:\n{checked_str}\n"
+                    f"Check 'dataset.root' in configs/dataset.yaml points at the right scene "
+                    f"folder, or if you haven't run SfM yet, set "
+                    f"'preprocessing.colmap.enabled: true' to automatically run SfM via "
+                    f"pycolmap (just needs `pip install pycolmap`, no need to install the "
+                    f"COLMAP CLI/PATH). If 'dataset.root' is read-only (e.g. /kaggle/input), "
+                    f"also set 'preprocessing.colmap.workspace' to point at a writable "
+                    f"directory (SfM output is written there, not into dataset.root).")
             sparse_dir = self._run_pycolmap_pipeline(images_dir, workspace_dir)
         elif colmap_enabled:
             # The user explicitly enabled colmap.enabled even though
