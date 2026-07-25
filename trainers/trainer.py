@@ -111,7 +111,7 @@ class Trainer:
         # ACTIVE, continuous shrink every iteration rather than only at
         # densify events - targets "Smearing" (oversized + high-opacity
         # Gaussian blending over a wide image area). See _clamp_max_scale().
-        max_scale_ratio = cfg_get(cfg, "densify.max_scale_ratio", 0.1)
+        max_scale_ratio = cfg_get(cfg, "densify.max_scale_ratio", 0.02)
 
         min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.005)
         opacity_reset_interval = cfg_get(cfg, "pruning.opacity.reset_interval", 3000)

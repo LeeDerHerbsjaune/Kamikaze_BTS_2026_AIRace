@@ -4,7 +4,7 @@
 
 training:
 
-  iterations: 50000
+  iterations: 30000
 
   log_interval: 50
 
