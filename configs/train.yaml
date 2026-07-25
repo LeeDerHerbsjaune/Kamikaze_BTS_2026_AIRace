@@ -92,7 +92,7 @@ densify:
   # trục ngắn nhất lên tối thiểu bằng `trục dài nhất / max_anisotropy` -
   # KHÔNG bao giờ đụng tới trục dài nhất, chỉ ngăn trục ngắn co lại quá mức.
   # Để null hoặc 0 để tắt (không giới hạn, giống 3DGS gốc).
-  max_anisotropy: 10.0
+  max_anisotropy: 8.0
 
 # ==========================================================
 # Gaussian Pruning
