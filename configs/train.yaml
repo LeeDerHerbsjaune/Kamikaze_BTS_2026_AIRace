@@ -4,7 +4,7 @@
 
 training:
 
-  iterations: 30000
+  iterations: 40000
 
   log_interval: 50
 
@@ -63,7 +63,7 @@ densify:
 
   from_iter: 500
 
-  until_iter: 15000
+  until_iter: 20000
 
   interval: 100
 
@@ -81,7 +81,7 @@ densify:
   # bảo an toàn tuyệt đối (còn phụ thuộc dataset.images.resolution, số ảnh,
   # sh_degree...); tăng/giảm dựa trên VRAM còn trống thực tế bạn quan sát
   # được qua nvidia-smi trong lúc train.
-  max_gaussians: 400000
+  max_gaussians: 2000000
 
   # Trần tỉ lệ (trục dài nhất / trục ngắn nhất) cho phép trên mỗi Gaussian.
   # Nếu không giới hạn, optimizer có thể kéo 1 Gaussian thành hình "kim" cực
@@ -92,7 +92,7 @@ densify:
   # trục ngắn nhất lên tối thiểu bằng `trục dài nhất / max_anisotropy` -
   # KHÔNG bao giờ đụng tới trục dài nhất, chỉ ngăn trục ngắn co lại quá mức.
   # Để null hoặc 0 để tắt (không giới hạn, giống 3DGS gốc).
-  max_anisotropy: 10.0
+  max_anisotropy: 6.0
 
   # Trần tỉ lệ (so với bán kính scene) cho MỖI trục scale, áp dụng CHỦ ĐỘNG
   # mỗi iteration (không chỉ lúc densify) - nhắm vào artifact "Smearing"
@@ -100,7 +100,7 @@ densify:
   # tiết). Dùng chung ngưỡng với pruning.size.max_world_ratio bên dưới (prune
   # là lưới an toàn cuối, clamp này chủ động nắn liên tục giữa các lần
   # densify). Để null/0 để tắt.
-  max_scale_ratio: 0.1
+  max_scale_ratio: 0.06
 
 # ==========================================================
 # Gaussian Pruning
@@ -110,7 +110,7 @@ pruning:
 
   opacity:
 
-    min: 0.005
+    min: 0.015
 
     reset_interval: 3000
 
@@ -118,7 +118,7 @@ pruning:
 
     max_screen: 20
 
-    max_world_ratio: 0.1
+    max_world_ratio: 0.05
 
   # Trần khoảng cách (tính theo bội số bán kính scene đã normalize) từ tâm
   # scene - nhắm vào artifact "Background collapse"/"Floating Gaussian"
@@ -138,4 +138,4 @@ pruning:
     # vào "Floating Gaussian") dù code có default=3 - vì key này TỒN TẠI
     # trong yaml (giá trị None), cfg_get() sẽ dùng giá trị None đó thay vì
     # default trong code. Phải set rõ ràng 1 con số ở đây nếu muốn bật.
-    min_visible_count: 3
+    min_visible_count: 5
