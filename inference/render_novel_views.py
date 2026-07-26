@@ -66,7 +66,6 @@ def main(cfg_path):
     backend = cfg_get(cfg, "renderer.backend", "gsplat")
 
     frames = []
-    alpha_stats = []
     for cam in tqdm(dataset.target_cameras, desc="Rendering novel views"):
         with torch.no_grad():
             out = render(cam, gaussians, bg_color, backend=backend)
@@ -75,36 +74,10 @@ def main(cfg_path):
             save_path = os.path.join(out_dir, f"{cam.image_name}.png")
             pil_img.save(save_path)
         frames.append(np.array(pil_img))
-        if out.get("alpha") is not None:
-            alpha_stats.append(out["alpha"].mean().item())
 
     logger.log_text(f"Rendered {len(dataset.target_cameras)} novel view images to {out_dir}")
     logger.log_artifact("novel_view_images", out_dir, iteration=ckpt["iteration"],
                         note=f"{len(dataset.target_cameras)} images")
-
-    if alpha_stats:
-        mean_alpha = sum(alpha_stats) / len(alpha_stats)
-        min_alpha = min(alpha_stats)
-        # Mean alpha (accumulated opacity per pixel) close to 0 means most
-        # rays never hit enough Gaussian coverage and are showing
-        # background color (black by default) instead of scene content -
-        # the render looks dark/underexposed NOT because colors are wrong,
-        # but because there's almost nothing opaque there to show a color
-        # for. This is a completely different root cause (and fix) than
-        # e.g. insufficient training or an SH color bug, both of which
-        # would still show reasonably high alpha.
-        logger.log_text(f"Mean alpha (opacity coverage) across novel views: {mean_alpha:.4f} "
-                        f"(min: {min_alpha:.4f}). Low values (<0.3) strongly suggest these "
-                        f"cameras are pointed at regions with sparse/no reconstructed "
-                        f"geometry, or are positioned much farther from the scene than "
-                        f"train cameras - not an undertrained-model or color issue.")
-        if mean_alpha < 0.3:
-            logger.log_text("WARNING: low alpha coverage detected - this is very likely why "
-                            "novel-view renders look mostly dark/black. Check "
-                            "dataset.target_views.pose_convention, verify normalize_scene is "
-                            "applied consistently, and confirm these target camera positions "
-                            "actually overlap the photographed area (not just plausible in "
-                            "isolation).")
 
     if render_video and frames:
         video_path = os.path.join(out_dir, "novel_views.mp4")
