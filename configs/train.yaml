@@ -4,7 +4,7 @@
 
 training:
 
-  iterations: 50000
+  iterations: 30000
 
   log_interval: 50
 
@@ -63,11 +63,11 @@ densify:
 
   from_iter: 500
 
-  until_iter: 20000
+  until_iter: 15000
 
   interval: 100
 
-  grad_threshold: 0.00015
+  grad_threshold: 0.0002
 
   clone_factor: 2
   split_factor: 2
@@ -81,7 +81,7 @@ densify:
   # bảo an toàn tuyệt đối (còn phụ thuộc dataset.images.resolution, số ảnh,
   # sh_degree...); tăng/giảm dựa trên VRAM còn trống thực tế bạn quan sát
   # được qua nvidia-smi trong lúc train.
-  max_gaussians: 2000000
+  max_gaussians: 400000
 
   # Trần tỉ lệ (trục dài nhất / trục ngắn nhất) cho phép trên mỗi Gaussian.
   # Nếu không giới hạn, optimizer có thể kéo 1 Gaussian thành hình "kim" cực
@@ -92,7 +92,15 @@ densify:
   # trục ngắn nhất lên tối thiểu bằng `trục dài nhất / max_anisotropy` -
   # KHÔNG bao giờ đụng tới trục dài nhất, chỉ ngăn trục ngắn co lại quá mức.
   # Để null hoặc 0 để tắt (không giới hạn, giống 3DGS gốc).
-  max_anisotropy: 5.0
+  max_anisotropy: 10.0
+
+  # Trần tỉ lệ (so với bán kính scene) cho MỖI trục scale, áp dụng CHỦ ĐỘNG
+  # mỗi iteration (không chỉ lúc densify) - nhắm vào artifact "Smearing"
+  # (Gaussian quá khổ + opacity cao che phủ 1 vùng ảnh rộng, làm nhòe chi
+  # tiết). Dùng chung ngưỡng với pruning.size.max_world_ratio bên dưới (prune
+  # là lưới an toàn cuối, clamp này chủ động nắn liên tục giữa các lần
+  # densify). Để null/0 để tắt.
+  max_scale_ratio: 0.1
 
 # ==========================================================
 # Gaussian Pruning
@@ -102,7 +110,7 @@ pruning:
 
   opacity:
 
-    min: 0.015
+    min: 0.005
 
     reset_interval: 3000
 
@@ -112,10 +120,22 @@ pruning:
 
     max_world_ratio: 0.1
 
+  # Trần khoảng cách (tính theo bội số bán kính scene đã normalize) từ tâm
+  # scene - nhắm vào artifact "Background collapse"/"Floating Gaussian"
+  # vùng trời: Gaussian ở đó thường VẪN được nhìn thấy ở nhiều ảnh train
+  # (bầu trời chiếm phần lớn khung hình các ảnh chếch lên), nên
+  # min_visible_count bên dưới KHÔNG bắt được chúng - cần tiêu chí độc lập
+  # dựa trên vị trí bất thường thay vì tần suất nhìn thấy. Để null để tắt.
+  max_distance_from_center: 2.5
+
   schedule:
 
     # Prune nhẹ theo lịch riêng, độc lập với chu kỳ densify chính.
     # Mặc định dùng lại from_iter/interval của densify nếu để null.
     after_iter: null
     interval: null
-    min_visible_count: null
+    # QUAN TRỌNG: để null ở đây sẽ TẮT HẲN visibility-based pruning (nhắm
+    # vào "Floating Gaussian") dù code có default=3 - vì key này TỒN TẠI
+    # trong yaml (giá trị None), cfg_get() sẽ dùng giá trị None đó thay vì
+    # default trong code. Phải set rõ ràng 1 con số ở đây nếu muốn bật.
+    min_visible_count: 3

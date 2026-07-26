@@ -19,6 +19,21 @@ loss:
   mask:
     weight: 0.0
 
+  sh_regularization:
+    # L2 penalty on the higher-order (view-dependent) SH coefficients only
+    # (NOT the DC/base-color term). Without this, coefficients can grow
+    # large enough to predict a strongly negative color from a viewing
+    # angle far outside the training distribution - after the renderer's
+    # clamp_min(color+0.5, 0.0), that clamps straight to black, which is
+    # one real cause of novel-view renders coming out mostly dark despite
+    # training loss (measured only on train-view angles) looking fine.
+    # Also mitigates "Halo" and "Color bleeding" artifacts, which stem
+    # from the same root cause (unconstrained SH coefficients). 0.0 =
+    # disabled (matches the reference implementation's default, which has
+    # no such term); try 0.001-0.01 if novel views look dark/haloed/color-
+    # bled despite reasonable train/eval PSNR.
+    weight: 0.0
+
 evaluation:
 
   metrics:

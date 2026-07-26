@@ -153,15 +153,35 @@ def run_inference_from_cfg(cfg, gaussians, dataset, logger):
     fps = cfg_get(cfg, "inference.render.video.fps", 24)
 
     frames = []
+    alpha_stats = []
     for cam in dataset.target_cameras:
         with torch.no_grad():
             out = render(cam, gaussians, bg_color, backend=backend)
         pil_img = tensor_to_pil(out["render"])
         pil_img.save(os.path.join(out_dir, f"{cam.image_name}.png"))
         frames.append(pil_img)
+        if out.get("alpha") is not None:
+            alpha_stats.append(out["alpha"].mean().item())
 
     logger.log_text(f"Rendered {len(dataset.target_cameras)} novel view images to {out_dir}")
     logger.log_artifact("novel_view_images", out_dir, note=f"{len(dataset.target_cameras)} images")
+
+    if alpha_stats:
+        mean_alpha = sum(alpha_stats) / len(alpha_stats)
+        # See inference/render_novel_views.py for the full explanation: low
+        # mean alpha (opacity coverage) means the render looks dark because
+        # rays mostly miss the reconstructed geometry, not because of a
+        # training/color problem.
+        logger.log_text(f"Mean alpha (opacity coverage) across novel views: {mean_alpha:.4f} "
+                        f"(min: {min(alpha_stats):.4f}). Low values (<0.3) strongly suggest "
+                        f"these cameras are pointed at regions with sparse/no reconstructed "
+                        f"geometry, or are positioned much farther from the scene than train "
+                        f"cameras.")
+        if mean_alpha < 0.3:
+            logger.log_text("WARNING: low alpha coverage detected - this is very likely why "
+                            "novel-view renders look mostly dark/black. Check "
+                            "dataset.target_views.pose_convention and verify these target "
+                            "camera positions actually overlap the photographed area.")
 
     if render_video and frames:
         video_path = os.path.join(out_dir, "novel_views.mp4")
