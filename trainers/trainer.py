@@ -128,6 +128,23 @@ class Trainer:
         # artifact (visibility-based pruning).
         min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 3)
 
+        # SAFETY NET: never let any prune step reduce the Gaussian count
+        # below this floor. Without it, a misconfigured/miscalibrated prune
+        # criterion (e.g. too-aggressive pruning.max_distance_from_center on
+        # a scene where it doesn't apply well) can silently wipe out ALL
+        # Gaussians, and the *next* render call then hands gsplat's CUDA
+        # kernel a completely empty scene - which doesn't raise a normal
+        # Python exception, it crashes the whole process with a native
+        # SIGFPE (integer divide-by-zero in the kernel's launch grid sizing)
+        # deep inside gsplat, with no Python traceback pointing back to the
+        # actual cause. This is exactly what happened in a real run: pruning
+        # took n_gaussians from ~192k to 0 in a single call at iteration
+        # 600, and the crash only surfaced ~50 iterations later at the next
+        # render call. This floor turns that into a loud, diagnosable
+        # Python-level warning instead of an opaque native crash.
+        min_gaussians_floor = cfg_get(cfg, "pruning.min_gaussians_floor", 1000)
+        self.min_gaussians_floor = min_gaussians_floor
+
         sh_reg_weight = cfg_get(cfg, "loss.sh_regularization.weight", 0.0)
 
         pbar = tqdm(range(1, n_iters + 1), desc="Training")
@@ -157,6 +174,24 @@ class Trainer:
                 cam_pool = self.train_cams.copy()
                 random.shuffle(cam_pool)
             cam = cam_pool.pop()
+
+            # SAFETY: gsplat's CUDA kernel does not handle an empty (0
+            # Gaussians) scene gracefully - it crashes the whole process
+            # with a native SIGFPE (integer divide-by-zero while sizing its
+            # launch grid) instead of raising a normal Python exception.
+            # _prune_points() already refuses to prune below
+            # pruning.min_gaussians_floor, but this catches any other way
+            # the count could reach 0 (e.g. a corrupted/edited checkpoint
+            # loaded via --resume) with a clear, catchable error instead of
+            # an opaque native crash with no Python traceback.
+            n_gaussians_now = self.gaussians.xyz.shape[0]
+            if n_gaussians_now == 0:
+                raise RuntimeError(
+                    f"gaussians.xyz has 0 points at iteration {iteration} - refusing to call "
+                    f"render() (would crash gsplat's CUDA kernel with a native SIGFPE, not a "
+                    f"catchable Python error). Check the checkpoint used to resume, or the "
+                    f"'[prune SAFETY]'/'[prune breakdown]' lines in the log above for how the "
+                    f"count reached 0.")
 
             # -------- Render --------
             out = render(cam, self.gaussians, self.bg_color, backend=self.backend)
@@ -521,7 +556,10 @@ class Trainer:
 
     def _extra_prune_mask(self, min_opacity, max_screen_size, extent, min_world_size_ratio,
                           max_world_ratio=0.1, max_distance_from_center=None):
-        prune_mask = (self.gaussians.opacity < min_opacity).squeeze(-1)
+        n_total = self.gaussians.xyz.shape[0]
+        low_opacity = (self.gaussians.opacity < min_opacity).squeeze(-1)
+        prune_mask = low_opacity
+        big_points_vs = big_points_ws = tiny_points = far_from_center = None
         if max_screen_size:
             big_points_vs = self.gaussians.max_radii2D > max_screen_size
             big_points_ws = self.gaussians.scaling.max(dim=1).values > max_world_ratio * extent
@@ -547,9 +585,43 @@ class Trainer:
         # geometrically plausible. Distance-from-center is a cheap proxy
         # for "is there a real, well-constrained surface here" without
         # needing an actual sky segmentation mask.
+        #
+        # CAVEAT (learned from a real collapse-to-zero incident): `extent`
+        # is the CAMERA orbit radius, not the radius of the photographed
+        # structure. For aerial/drone surveys these are NOT interchangeable
+        # - a drone can orbit in a tight loop while the building/tower
+        # footprint it's photographing extends well beyond that loop's
+        # radius on the ground. On such scenes this criterion can flag most
+        # or all of the REAL geometry as "far from center", not just sky
+        # floaters. Treat max_distance_from_center as scene-specific and
+        # verify against the warning below before trusting it.
         if max_distance_from_center:
             far_from_center = self.gaussians.xyz.norm(dim=1) > max_distance_from_center * extent
             prune_mask = prune_mask | far_from_center
+
+        n_flagged = int(prune_mask.sum().item())
+        if n_flagged > 0:
+            parts = [f"low_opacity={int(low_opacity.sum().item())}"]
+            if big_points_vs is not None:
+                parts.append(f"big_screen={int(big_points_vs.sum().item())}")
+                parts.append(f"big_world={int(big_points_ws.sum().item())}")
+            if tiny_points is not None:
+                parts.append(f"tiny={int(tiny_points.sum().item())}")
+            if far_from_center is not None:
+                n_far = int(far_from_center.sum().item())
+                parts.append(f"far_from_center={n_far}")
+                if n_total > 0 and n_far / n_total > 0.5:
+                    self.logger.log_text(
+                        f"[prune WARNING] max_distance_from_center flagged {n_far}/{n_total} "
+                        f"({100 * n_far / n_total:.0f}%) of ALL Gaussians as 'too far from scene "
+                        f"center' - that's suspiciously high for a criterion meant to catch only "
+                        f"sky floaters. Likely miscalibrated for this scene's camera geometry (see "
+                        f"the caveat in _extra_prune_mask's docstring). Consider raising the "
+                        f"threshold or disabling it (set to null) if renders start losing real "
+                        f"geometry.")
+            self.logger.log_text(
+                f"[prune breakdown @ {n_total} Gaussians] flagged {n_flagged} total "
+                f"({', '.join(parts)}, union may overlap)")
         return prune_mask
 
     def prune_low_quality(self, min_opacity, min_visible_count=None,
@@ -648,6 +720,25 @@ class Trainer:
         self.gaussians.max_radii2D = torch.cat([self.gaussians.max_radii2D, torch.zeros(new_xyz.shape[0], device=self.gaussians.device)])
 
     def _prune_points(self, mask):
+        n_total = mask.shape[0]
+        n_would_remove = int(mask.sum().item())
+        n_would_keep = n_total - n_would_remove
+        floor = getattr(self, "min_gaussians_floor", 1000)
+        if n_would_keep < floor:
+            self.logger.log_text(
+                f"[prune SAFETY] REFUSED: this prune would remove {n_would_remove}/{n_total} "
+                f"Gaussians, leaving only {n_would_keep} (below the floor of {floor}). Skipping "
+                f"it entirely rather than risk collapsing to (near) zero Gaussians, which crashes "
+                f"the next render call with a native CUDA SIGFPE instead of a catchable Python "
+                f"error. This almost always means a prune criterion is miscalibrated for this "
+                f"scene - most likely 'pruning.max_distance_from_center': for aerial/drone data "
+                f"the camera-orbit radius (what 'extent' is computed from) can be smaller than "
+                f"the footprint of the actual structure being photographed, so a heuristic tuned "
+                f"as a multiple of camera extent can flag real geometry as 'too far from center' "
+                f"just as easily as it flags genuine sky floaters. Try raising "
+                f"max_distance_from_center substantially, or set it to null to disable, and check "
+                f"'pruning.size.max_world_ratio' / 'densify.min_world_size_ratio' too.")
+            return
         valid = ~mask
         for group in self.optimizer.param_groups:
             old_param = group["params"][0]

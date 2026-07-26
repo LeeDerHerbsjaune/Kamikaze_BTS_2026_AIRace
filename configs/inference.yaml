@@ -9,6 +9,12 @@ inference:
   output:
     directory: "./outputs/bts_scene_01/novel_views"
 
+    # Zips every rendered .png into a single archive (placed next to
+    # `directory`, i.e. one level up) right after rendering - ready to
+    # upload as-is. Off by default so existing behavior is unchanged.
+    zip: false
+    zip_name: "submission.zip"
+
   render:
 
     images: true

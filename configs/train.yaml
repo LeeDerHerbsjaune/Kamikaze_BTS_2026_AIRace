@@ -126,7 +126,25 @@ pruning:
   # (bầu trời chiếm phần lớn khung hình các ảnh chếch lên), nên
   # min_visible_count bên dưới KHÔNG bắt được chúng - cần tiêu chí độc lập
   # dựa trên vị trí bất thường thay vì tần suất nhìn thấy. Để null để tắt.
-  max_distance_from_center: 2.5
+  # CẢNH BÁO (từ 1 sự cố thật): "extent" ở đây là bán kính QUỸ ĐẠO CAMERA
+  # (drone bay quanh trạm), KHÔNG phải bán kính công trình thật. Với dữ liệu
+  # drone/aerial, 2 cái này có thể lệch nhau nhiều - drone bay vòng bán kính
+  # hẹp nhưng chụp xuống 1 công trình có chân đế rộng hơn hẳn quỹ đạo bay.
+  # Nếu để quá thấp, tiêu chí này xoá luôn cả hình học THẬT (không chỉ
+  # floater vùng trời) - đã từng gây sập toàn bộ Gaussian về 0 (192304 -> 0
+  # ngay lần prune đầu tiên ở iter 600), kéo theo crash SIGFPE native trong
+  # gsplat ở lần render kế tiếp. Đã nới từ giá trị cũ gây sự cố lên 6.0 -
+  # theo dõi log dòng "[prune WARNING]"/"[prune breakdown]" khi train để
+  # biết % Gaussian bị tiêu chí này đánh dấu; nếu vẫn thấy > 20-30% dù đã
+  # nới, cân nhắc set null để tắt hẳn thay vì dò tiếp.
+  max_distance_from_center: 6.0
+
+  # Trần an toàn tuyệt đối: KHÔNG BAO GIỜ để 1 lần prune xoá xuống dưới mức
+  # này (xem _prune_points() trong trainer.py) - phòng trường hợp 1 tiêu chí
+  # prune nào đó (vd max_distance_from_center ở trên) bị cấu hình sai và xoá
+  # gần hết/toàn bộ Gaussian, dẫn tới lần render kế tiếp crash cứng
+  # (SIGFPE native trong gsplat, không phải lỗi Python bắt được).
+  min_gaussians_floor: 1000
 
   schedule:
 
