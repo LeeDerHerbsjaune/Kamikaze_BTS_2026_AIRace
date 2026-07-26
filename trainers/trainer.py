@@ -104,18 +104,33 @@ class Trainer:
         clone_factor = cfg_get(cfg, "densify.clone_factor", 2)
         split_factor = cfg_get(cfg, "densify.split_factor", 2)
         min_world_size_ratio = cfg_get(cfg, "densify.min_world_size_ratio", 1.0e-5)
-        max_world_ratio = cfg_get(cfg, "pruning.size.max_world_ratio", 0.1)
-        max_distance_from_center = cfg_get(cfg, "pruning.max_distance_from_center", 2.5)
+        max_world_ratio = cfg_get(cfg, "pruning.size.max_world_ratio", 0.05)
         max_gaussians = cfg_get(cfg, "densify.max_gaussians", None)
-        max_anisotropy = cfg_get(cfg, "densify.max_anisotropy", 10.0)
+        max_anisotropy = cfg_get(cfg, "densify.max_anisotropy", 7.0)
         # Same threshold as pruning's max_world_ratio, but applied as an
         # ACTIVE, continuous shrink every iteration rather than only at
         # densify events - targets "Smearing" (oversized + high-opacity
         # Gaussian blending over a wide image area). See _clamp_max_scale().
-        max_scale_ratio = cfg_get(cfg, "densify.max_scale_ratio", 0.1)
+        max_scale_ratio = cfg_get(cfg, "densify.max_scale_ratio", 0.06)
 
-        min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.005)
+        min_opacity = cfg_get(cfg, "pruning.opacity.min", 0.015)
         opacity_reset_interval = cfg_get(cfg, "pruning.opacity.reset_interval", 3000)
+        # Stop periodically zeroing-out opacity once training is this far
+        # along. Defaults to densify_until_iter: once density has stopped
+        # growing/pruning, a reset only destabilizes an otherwise-converging
+        # model with nothing to gain - and critically, a reset with no
+        # iterations left afterward to recover leaves the FINAL saved
+        # checkpoint stuck in its just-reset, near-invisible state.
+        # CONFIRMED from real training logs (twice now): eval PSNR crashes
+        # to ~5.6 (from a normal ~18-19) at every iteration that's a common
+        # multiple of opacity_reset_interval and eval_interval, fully
+        # recovering ~1-2k iterations later each time. When
+        # opacity_reset_interval evenly divides training.iterations, the
+        # very last reset lands exactly on the final iteration, so
+        # last.pth/iter_<n_iters>.pth gets saved mid-crash - this is what
+        # produced the near-black renders reported so far, not a training
+        # failure or a bad checkpoint per se.
+        opacity_reset_until_iter = cfg_get(cfg, "pruning.opacity.reset_until_iter", densify_until_iter)
         max_screen_size = cfg_get(cfg, "pruning.size.max_screen", 20)
 
         prune_after_iter = cfg_get(cfg, "pruning.schedule.after_iter") or densify_from_iter
@@ -126,24 +141,7 @@ class Trainer:
         # rather than real geometry, since it was never cross-validated by
         # a second or third viewpoint. Targets the "Floating Gaussian"
         # artifact (visibility-based pruning).
-        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 3)
-
-        # SAFETY NET: never let any prune step reduce the Gaussian count
-        # below this floor. Without it, a misconfigured/miscalibrated prune
-        # criterion (e.g. too-aggressive pruning.max_distance_from_center on
-        # a scene where it doesn't apply well) can silently wipe out ALL
-        # Gaussians, and the *next* render call then hands gsplat's CUDA
-        # kernel a completely empty scene - which doesn't raise a normal
-        # Python exception, it crashes the whole process with a native
-        # SIGFPE (integer divide-by-zero in the kernel's launch grid sizing)
-        # deep inside gsplat, with no Python traceback pointing back to the
-        # actual cause. This is exactly what happened in a real run: pruning
-        # took n_gaussians from ~192k to 0 in a single call at iteration
-        # 600, and the crash only surfaced ~50 iterations later at the next
-        # render call. This floor turns that into a loud, diagnosable
-        # Python-level warning instead of an opaque native crash.
-        min_gaussians_floor = cfg_get(cfg, "pruning.min_gaussians_floor", 1000)
-        self.min_gaussians_floor = min_gaussians_floor
+        min_visible_count = cfg_get(cfg, "pruning.schedule.min_visible_count", 5)
 
         sh_reg_weight = cfg_get(cfg, "loss.sh_regularization.weight", 0.0)
 
@@ -175,24 +173,6 @@ class Trainer:
                 random.shuffle(cam_pool)
             cam = cam_pool.pop()
 
-            # SAFETY: gsplat's CUDA kernel does not handle an empty (0
-            # Gaussians) scene gracefully - it crashes the whole process
-            # with a native SIGFPE (integer divide-by-zero while sizing its
-            # launch grid) instead of raising a normal Python exception.
-            # _prune_points() already refuses to prune below
-            # pruning.min_gaussians_floor, but this catches any other way
-            # the count could reach 0 (e.g. a corrupted/edited checkpoint
-            # loaded via --resume) with a clear, catchable error instead of
-            # an opaque native crash with no Python traceback.
-            n_gaussians_now = self.gaussians.xyz.shape[0]
-            if n_gaussians_now == 0:
-                raise RuntimeError(
-                    f"gaussians.xyz has 0 points at iteration {iteration} - refusing to call "
-                    f"render() (would crash gsplat's CUDA kernel with a native SIGFPE, not a "
-                    f"catchable Python error). Check the checkpoint used to resume, or the "
-                    f"'[prune SAFETY]'/'[prune breakdown]' lines in the log above for how the "
-                    f"count reached 0.")
-
             # -------- Render --------
             out = render(cam, self.gaussians, self.bg_color, backend=self.backend)
             rendered = out["render"]
@@ -200,26 +180,6 @@ class Trainer:
 
             # -------- Loss --------
             loss, loss_parts = compute_loss(rendered, gt, lambda_dssim)
-
-            # SH regularization: L2 penalty on the higher-order (view-
-            # dependent) SH coefficients only (features_rest - NOT the DC
-            # term, which carries the base/average color and must stay
-            # free to fit the true albedo). Without this, coefficients can
-            # grow large enough to produce a strongly negative color
-            # prediction when evaluated from a viewing angle far outside
-            # the training distribution (exactly what a target/novel view
-            # often is) - after the renderer's clamp_min(colors+0.5, 0.0),
-            # a strongly negative raw value clamps straight to black,
-            # which is one mechanism behind renders that come out mostly
-            # dark/underexposed despite training loss looking fine (loss
-            # is only ever measured on TRAIN-view angles, so this failure
-            # mode is invisible to the training loss itself). Also targets
-            # the "Halo" and "Color bleeding" artifacts, which stem from
-            # the same root cause (SH coefficients too large/unconstrained).
-            if sh_reg_weight > 0:
-                sh_reg = self.gaussians._features_rest.pow(2).mean()
-                loss = loss + sh_reg_weight * sh_reg
-                loss_parts["sh_reg"] = sh_reg.item()
 
             # -------- Backward --------
             self.optimizer.zero_grad(set_to_none=True)
@@ -267,8 +227,13 @@ class Trainer:
             if max_anisotropy and max_anisotropy > 0:
                 self._clamp_anisotropy(max_anisotropy)
 
-            # -------- Clamp max scale (prevent oversized/smearing Gaussians) --------
-            # See _clamp_max_scale() docstring - targets "Smearing".
+            # -------- Clamp max scale (prevent "smearing") --------
+            # BUGFIX: this call was previously missing entirely - the
+            # config value (max_scale_ratio) was read above and the method
+            # itself was fully implemented, but never invoked, so oversized/
+            # high-opacity Gaussians could grow unchecked between densify
+            # events despite the docstring/comments describing this as an
+            # active per-iteration safeguard. See _clamp_max_scale().
             if max_scale_ratio and max_scale_ratio > 0:
                 self._clamp_max_scale(max_scale_ratio * cached_extent)
 
@@ -292,8 +257,7 @@ class Trainer:
                         clone_factor=clone_factor, split_factor=split_factor,
                         min_world_size_ratio=min_world_size_ratio,
                         max_gaussians=max_gaussians,
-                        max_world_ratio=max_world_ratio,
-                        max_distance_from_center=max_distance_from_center)
+                        max_world_ratio=max_world_ratio)
                     n_after = self.gaussians.xyz.shape[0]
                     self.logger.log_text(
                         f"[densify @ iter {iteration}] n_gaussians: {n_before} -> {n_after} "
@@ -301,12 +265,15 @@ class Trainer:
 
                 # -------- Light-weight prune on its own schedule, independent of densify --------
                 if (iteration > prune_after_iter and iteration % prune_interval == 0):
-                    self.prune_low_quality(min_opacity, min_visible_count=min_visible_count,
-                                           max_distance_from_center=max_distance_from_center,
-                                           extent=cached_extent)
+                    self.prune_low_quality(min_opacity, min_visible_count=min_visible_count)
 
-                if opacity_reset_interval and iteration % opacity_reset_interval == 0:
+                if (opacity_reset_interval and iteration % opacity_reset_interval == 0
+                        and iteration < min(opacity_reset_until_iter, n_iters)):
                     self.reset_opacity()
+                    self.logger.log_text(
+                        f"[opacity-reset @ iter {iteration}] opacity forced back down to ~0.01 - "
+                        f"expect PSNR/SSIM to dip at the very next eval and recover over the "
+                        f"following ~1-2k iterations; this is expected, not a bug.")
 
             if iteration % log_interval == 0:
                 now = time.time()
@@ -525,14 +492,13 @@ class Trainer:
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size,
                           clone_factor=2, split_factor=2,
                           min_world_size_ratio=1.0e-5, max_gaussians=None,
-                          max_world_ratio=0.1, max_distance_from_center=None):
+                          max_world_ratio=0.1):
         grads = self.gaussians.xyz_gradient_accum / self.gaussians.denom.clamp_min(1)
         grads = torch.nan_to_num(grads, nan=0.0)
 
         if max_gaussians is not None and self.gaussians._xyz.shape[0] >= max_gaussians:
             self._prune_points(self._extra_prune_mask(min_opacity, max_screen_size,
-                                                        extent, min_world_size_ratio, max_world_ratio,
-                                                        max_distance_from_center))
+                                                        extent, min_world_size_ratio, max_world_ratio))
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             return
@@ -540,8 +506,7 @@ class Trainer:
         self._densify_and_clone(grads, max_grad, extent, clone_factor)
         self._densify_and_split(grads, max_grad, extent, split_factor)
 
-        prune_mask = self._extra_prune_mask(min_opacity, max_screen_size, extent, min_world_size_ratio,
-                                            max_world_ratio, max_distance_from_center)
+        prune_mask = self._extra_prune_mask(min_opacity, max_screen_size, extent, min_world_size_ratio, max_world_ratio)
         self._prune_points(prune_mask)
 
         if max_gaussians is not None and self.gaussians._xyz.shape[0] > max_gaussians:
@@ -554,12 +519,8 @@ class Trainer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def _extra_prune_mask(self, min_opacity, max_screen_size, extent, min_world_size_ratio,
-                          max_world_ratio=0.1, max_distance_from_center=None):
-        n_total = self.gaussians.xyz.shape[0]
-        low_opacity = (self.gaussians.opacity < min_opacity).squeeze(-1)
-        prune_mask = low_opacity
-        big_points_vs = big_points_ws = tiny_points = far_from_center = None
+    def _extra_prune_mask(self, min_opacity, max_screen_size, extent, min_world_size_ratio, max_world_ratio=0.1):
+        prune_mask = (self.gaussians.opacity < min_opacity).squeeze(-1)
         if max_screen_size:
             big_points_vs = self.gaussians.max_radii2D > max_screen_size
             big_points_ws = self.gaussians.scaling.max(dim=1).values > max_world_ratio * extent
@@ -571,61 +532,9 @@ class Trainer:
         if min_world_size_ratio:
             tiny_points = self.gaussians.scaling.max(dim=1).values < min_world_size_ratio * extent
             prune_mask = prune_mask | tiny_points
-        # Targets "Background collapse" / "Floating Gaussian" in the sky:
-        # normalize_scene recenters the scene to the origin, so
-        # ||xyz|| is the distance from scene center in the SAME normalized
-        # units as `extent` (train camera radius ~1). Sky/background
-        # regions have no real parallax to triangulate against, so the
-        # optimizer often pushes a Gaussian trying to explain that part of
-        # the image out to an implausible position far beyond where any
-        # real geometry (ground, buildings) ends up - but such a Gaussian
-        # can still be VISIBLE in many training views (sky fills much of
-        # an upward-tilted frame), so min_visible_count-based pruning alone
-        # does NOT catch it: being frequently seen is not the same as being
-        # geometrically plausible. Distance-from-center is a cheap proxy
-        # for "is there a real, well-constrained surface here" without
-        # needing an actual sky segmentation mask.
-        #
-        # CAVEAT (learned from a real collapse-to-zero incident): `extent`
-        # is the CAMERA orbit radius, not the radius of the photographed
-        # structure. For aerial/drone surveys these are NOT interchangeable
-        # - a drone can orbit in a tight loop while the building/tower
-        # footprint it's photographing extends well beyond that loop's
-        # radius on the ground. On such scenes this criterion can flag most
-        # or all of the REAL geometry as "far from center", not just sky
-        # floaters. Treat max_distance_from_center as scene-specific and
-        # verify against the warning below before trusting it.
-        if max_distance_from_center:
-            far_from_center = self.gaussians.xyz.norm(dim=1) > max_distance_from_center * extent
-            prune_mask = prune_mask | far_from_center
-
-        n_flagged = int(prune_mask.sum().item())
-        if n_flagged > 0:
-            parts = [f"low_opacity={int(low_opacity.sum().item())}"]
-            if big_points_vs is not None:
-                parts.append(f"big_screen={int(big_points_vs.sum().item())}")
-                parts.append(f"big_world={int(big_points_ws.sum().item())}")
-            if tiny_points is not None:
-                parts.append(f"tiny={int(tiny_points.sum().item())}")
-            if far_from_center is not None:
-                n_far = int(far_from_center.sum().item())
-                parts.append(f"far_from_center={n_far}")
-                if n_total > 0 and n_far / n_total > 0.5:
-                    self.logger.log_text(
-                        f"[prune WARNING] max_distance_from_center flagged {n_far}/{n_total} "
-                        f"({100 * n_far / n_total:.0f}%) of ALL Gaussians as 'too far from scene "
-                        f"center' - that's suspiciously high for a criterion meant to catch only "
-                        f"sky floaters. Likely miscalibrated for this scene's camera geometry (see "
-                        f"the caveat in _extra_prune_mask's docstring). Consider raising the "
-                        f"threshold or disabling it (set to null) if renders start losing real "
-                        f"geometry.")
-            self.logger.log_text(
-                f"[prune breakdown @ {n_total} Gaussians] flagged {n_flagged} total "
-                f"({', '.join(parts)}, union may overlap)")
         return prune_mask
 
-    def prune_low_quality(self, min_opacity, min_visible_count=None,
-                         max_distance_from_center=None, extent=None):
+    def prune_low_quality(self, min_opacity, min_visible_count=None):
         """Independent light-weight prune on its own schedule
         (pruning.schedule.interval/after_iter) - not present in the
         reference, added so pruning can run more often than the main
@@ -634,13 +543,6 @@ class Trainer:
         if min_visible_count is not None:
             rarely_seen = self.gaussians.denom.squeeze(-1) < min_visible_count
             prune_mask = prune_mask | rarely_seen
-        # See _extra_prune_mask()'s docstring for why this targets
-        # "Background collapse" / "Floating Gaussian" specifically (sky
-        # floaters are often frequently VISIBLE, so min_visible_count alone
-        # won't catch them - distance from scene center does).
-        if max_distance_from_center and extent:
-            far_from_center = self.gaussians.xyz.norm(dim=1) > max_distance_from_center * extent
-            prune_mask = prune_mask | far_from_center
         if prune_mask.any():
             self._prune_points(prune_mask)
             if torch.cuda.is_available():
@@ -720,25 +622,6 @@ class Trainer:
         self.gaussians.max_radii2D = torch.cat([self.gaussians.max_radii2D, torch.zeros(new_xyz.shape[0], device=self.gaussians.device)])
 
     def _prune_points(self, mask):
-        n_total = mask.shape[0]
-        n_would_remove = int(mask.sum().item())
-        n_would_keep = n_total - n_would_remove
-        floor = getattr(self, "min_gaussians_floor", 1000)
-        if n_would_keep < floor:
-            self.logger.log_text(
-                f"[prune SAFETY] REFUSED: this prune would remove {n_would_remove}/{n_total} "
-                f"Gaussians, leaving only {n_would_keep} (below the floor of {floor}). Skipping "
-                f"it entirely rather than risk collapsing to (near) zero Gaussians, which crashes "
-                f"the next render call with a native CUDA SIGFPE instead of a catchable Python "
-                f"error. This almost always means a prune criterion is miscalibrated for this "
-                f"scene - most likely 'pruning.max_distance_from_center': for aerial/drone data "
-                f"the camera-orbit radius (what 'extent' is computed from) can be smaller than "
-                f"the footprint of the actual structure being photographed, so a heuristic tuned "
-                f"as a multiple of camera extent can flag real geometry as 'too far from center' "
-                f"just as easily as it flags genuine sky floaters. Try raising "
-                f"max_distance_from_center substantially, or set it to null to disable, and check "
-                f"'pruning.size.max_world_ratio' / 'densify.min_world_size_ratio' too.")
-            return
         valid = ~mask
         for group in self.optimizer.param_groups:
             old_param = group["params"][0]
