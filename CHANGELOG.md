@@ -284,3 +284,96 @@ Lệnh trên phải chạy không lỗi và in ra đầy đủ các section
     tắt). Đã test: Gaussian tỉ lệ 10000:1 bị kéo đúng về 10:1 (trục lớn nhất
     giữ nguyên), Gaussian đẳng hướng hoặc dưới ngưỡng không bị đổi, và chạy
     full training loop (mock renderer) với clamp bật không lỗi.
+
+## 🔴 Hoàn thiện các fix bị "định nghĩa nhưng quên gọi" + thêm sh_regularization (lần 10)
+
+30. **Phát hiện pattern lỗi lặp lại 2 lần liên tiếp trong cùng 1 lượt sửa
+    trước**: `_clamp_max_scale()` (fix Smearing) và biến `sh_reg_weight`
+    (định hướng fix Halo/Color bleeding) được thêm vào nhưng **chưa từng
+    được gọi/cộng vào loss** trong vòng lặp `train()`. Đã rà soát toàn bộ
+    method của `Trainer` bằng script đếm số lần gọi `self.<method>(` để xác
+    nhận không còn method nào "mồ côi" (định nghĩa nhưng không dùng) - toàn
+    bộ đã join vào vòng lặp chính. Đã sửa:
+    - Gọi `self._clamp_max_scale(max_scale_ratio * cached_extent)` mỗi
+      iteration (cùng chỗ với `_clamp_anisotropy`). Test xác nhận: Gaussian
+      bị ép scale=1000 (quá khổ) bị kéo đúng về giá trị trần ngay sau 1 lần
+      train().
+    - Thực sự cộng `sh_reg_weight * (_features_rest ** 2).mean()` vào
+      `loss` (trước đó biến này bị đọc rồi bỏ không).
+
+31. **Thêm `loss.sh_regularization.weight`** (mặc định `0.0`, tắt) -
+    penalty L2 lên hệ số SH bậc cao (KHÔNG đụng DC term). Không giới hạn,
+    optimizer có thể học hệ số SH đủ lớn để dự đoán màu ÂM MẠNH ở góc nhìn
+    khác hẳn phân phối train (chính là tình huống của target/novel view) -
+    sau bước `clamp_min(color+0.5, 0.0)` trong renderer, giá trị âm mạnh bị
+    cắt thẳng về đen. Đây là 1 cơ chế thực sự gây ra hiện tượng "render
+    novel view tối om" dù loss lúc train (chỉ đo trên góc nhìn train) vẫn
+    bình thường - loss train không bao giờ "nhìn thấy" lỗi này vì nó chỉ
+    lộ ra ở góc nhìn ngoài phân phối train. Cũng gián tiếp giảm artifact
+    Halo và Color bleeding (cùng nguyên nhân gốc: hệ số SH không bị ràng
+    buộc).
+
+32. **Thêm chẩn đoán "alpha coverage" vào cả 2 pipeline inference**
+    (`train.py` lẫn `inference/render_novel_views.py`): renderer giờ trả về
+    thêm key `"alpha"` (opacity tích luỹ theo tia, gsplat vốn đã tính sẵn
+    nhưng trước đây bị bỏ). Sau khi render xong toàn bộ novel view, tính
+    alpha trung bình + nhỏ nhất, ghi vào log, và tự in CẢNH BÁO nếu
+    alpha trung bình < 0.3 - đây là bằng chứng trực tiếp phân biệt "camera
+    nhìn vào vùng ít/không có Gaussian" (nguyên nhân tối do THIẾU HÌNH HỌC)
+    khỏi "màu bị lỗi/model chưa học đủ" (nguyên nhân tối do THIẾU MÀU) -
+    2 nguyên nhân cần cách xử lý hoàn toàn khác nhau, và trước đây chỉ có
+    thể đoán, không đo được.
+
+33. Nhân tiện sửa thêm 1 dead-config-key khác cùng khu vực:
+    `pruning.size.max_world_ratio` tồn tại trong yaml nhưng bị hardcode
+    `0.1` trong `_extra_prune_mask()`, bỏ qua giá trị người dùng đặt trong
+    config. Đã sửa để đọc đúng từ config, truyền xuyên suốt qua
+    `densify_and_prune()`.
+
+34. **Cải thiện thông báo lỗi thiếu sparse reconstruction**: trước đây khi
+    `preprocessing.colmap.workspace` được set, lỗi chỉ hiện ĐÚNG 1 đường dẫn
+    (candidate đầu tiên trong danh sách kiểm tra), khiến người dùng không
+    biết `dataset.root` gốc có thực sự được kiểm tra hay không. Giờ liệt kê
+    đầy đủ TẤT CẢ đường dẫn đã kiểm tra (tối đa 4: workspace/sparse/0,
+    workspace/sparse, dataset.root/sparse/0, dataset.root/sparse).
+
+## 🟡 Sửa Floating Gaussian / Background collapse còn sót (lần 11)
+
+35. **Vệt mờ dạng đám mây ở vùng trời vẫn còn sau khi train xong**, dù đã
+    dùng `min_visible_count=3` (fix mục 32/lần 10). Nguyên nhân 1 (bug
+    config): `pruning.schedule.min_visible_count: null` trong
+    `configs/train.yaml` **ghi đè** default `3` trong code - vì key này TỒN
+    TẠI trong yaml (giá trị `None`), `cfg_get()` trả về `None` thay vì dùng
+    default của code. Đã sửa: set rõ ràng `min_visible_count: 3` trong yaml.
+    Đã viết script rà soát toàn bộ `cfg_get(...)` trong `trainer.py` để xác
+    nhận không còn key nào khác bị lỗi tương tự.
+
+    Nguyên nhân 2 (thiếu tiêu chí prune): ngay cả khi bật đúng, floater trời
+    **thường vẫn được nhìn thấy ở nhiều ảnh train** (bầu trời chiếm phần
+    lớn khung hình các ảnh chếch lên), nên tiêu chí "hiếm khi thấy"
+    (`min_visible_count`) không bắt được chúng - thấy nhiều lần không đồng
+    nghĩa với tam giác hoá đúng vị trí. Đã thêm tiêu chí độc lập:
+    `pruning.max_distance_from_center` (mặc định `2.5`, đơn vị = bội số bán
+    kính scene đã `normalize_scene`) - Gaussian nằm xa tâm scene bất thường
+    (dấu hiệu tam giác hoá lỗi do thiếu parallax, điển hình ở vùng trời) bị
+    prune bất kể độ opacity hay tần suất nhìn thấy. Áp dụng ở cả
+    `densify_and_prune()` (lịch chính) và `prune_low_quality()` (lịch phụ,
+    tần suất riêng).
+
+    Đã test: Gaussian đặt xa tâm 10x bán kính scene bị đánh dấu prune đúng,
+    Gaussian ở vị trí hợp lý (0.5x) không bị đụng, và **test riêng biệt xác
+    nhận floater bị loại dù `denom` (số lần nhìn thấy) được set rất cao** -
+    đúng chứng minh tiêu chí này bổ sung cho `min_visible_count` chứ không
+    trùng lặp.
+
+## Ghi chú: "Thin structure mất chi tiết" (cột ăng-ten bị mờ/nhân đôi)
+
+Chưa implement fix riêng cho artifact này trong lượt này - "Edge-guided
+densification" (đúng như bảng liệt kê) cần hạ tầng mới đáng kể (tính bản đồ
+gradient ảnh ground-truth mỗi train view, tương quan với vùng Gaussian tái
+dựng kém, đưa vào tiêu chí densify) mà không nên vội làm ẩu trong 1 lượt sửa
+nhỏ. Gợi ý tạm thời (không cần sửa code): nếu cấu trúc mảnh chỉ xuất hiện rõ
+trong vài ảnh train hiếm hoi (thường đúng với cột ăng-ten thẳng đứng khi bay
+quanh site), thử hạ `densify.grad_threshold` (đánh đổi: tăng tổng số Gaussian
++ VRAM ở MỌI vùng, không riêng cấu trúc mảnh) hoặc bổ sung thêm ảnh train
+chụp rõ cấu trúc đó từ nhiều góc hơn.
