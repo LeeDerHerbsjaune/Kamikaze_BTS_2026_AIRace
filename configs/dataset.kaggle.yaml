@@ -21,7 +21,7 @@
 # chỉ thêm tiền tố /kaggle/input/<slug>/ ở đầu.)
 
 dataset:
-  root: "/kaggle/input/vai-nvs-data-hcm0031/train"   # <-- SỬA LẠI cho đúng dataset của bạn
+  root: "/kaggle/input/datasets/lthuhong/round2/HCM0644/train"   # <-- SỬA LẠI cho đúng dataset của bạn
   type: "colmap"                  # colmap | nerf_transforms
   images:
     directory: "images"
@@ -36,7 +36,7 @@ dataset:
   pointcloud:
     source: "sparse"
   target_views:
-    file: "target_poses.json"
+    file: "/kaggle/input/datasets/lthuhong/round2/HCM0644/test/test_poses.csv"
     # See configs/dataset.yaml for full explanation. Change to "cam_to_world"
     # if novel-view renders look like a garbled close-up mess of ellipsoids.
     pose_convention: "world_to_cam"
