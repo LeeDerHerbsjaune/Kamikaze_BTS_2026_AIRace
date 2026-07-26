@@ -118,7 +118,7 @@ pruning:
 
     max_screen: 20
 
-    max_world_ratio: 0.05
+    max_world_ratio: 0.06
 
   # Trần khoảng cách (tính theo bội số bán kính scene đã normalize) từ tâm
   # scene - nhắm vào artifact "Background collapse"/"Floating Gaussian"
