@@ -6,7 +6,6 @@ Inference -> Novel View Images.
 """
 import os
 import argparse
-import zipfile
 import torch
 import numpy as np
 from PIL import Image
@@ -24,10 +23,8 @@ def tensor_to_pil(img_tensor):
     return Image.fromarray(arr)
 
 
-def main(cfg_path, checkpoint_override=None):
+def main(cfg_path):
     cfg = load_config(cfg_path)
-    if checkpoint_override:
-        cfg.setdefault("inference", {})["checkpoint"] = checkpoint_override
 
     # Uses the same Logger/notes.md as train.py - placed in the output
     # directory (not checkpoint_dir) so results are recorded even when
@@ -109,10 +106,6 @@ def main(cfg_path, checkpoint_override=None):
                             "actually overlap the photographed area (not just plausible in "
                             "isolation).")
 
-    zip_path = None
-    if render_images:
-        zip_path = _maybe_zip_submission(out_dir, cfg, logger)
-
     if render_video and frames:
         video_path = os.path.join(out_dir, "novel_views.mp4")
         _save_video(frames, video_path, fps)
@@ -123,37 +116,8 @@ def main(cfg_path, checkpoint_override=None):
         f"Checkpoint: {checkpoint_path} (iteration {ckpt['iteration']})",
         f"Novel views rendered: {len(dataset.target_cameras)}",
         f"Output directory: {out_dir}",
-        f"Submission zip: {zip_path if zip_path else 'not created (inference.output.zip=false or no PNGs)'}",
     ])
     logger.close()
-
-
-def _maybe_zip_submission(out_dir, cfg, logger=None):
-    """Zips every .png just rendered into out_dir into a single
-    submission.zip (placed next to out_dir, i.e. one level up), ready to
-    upload directly. Opt-in via inference.output.zip: true - off by default
-    so existing runs/configs keep behaving exactly as before."""
-    zip_enabled = cfg_get(cfg, "inference.output.zip", False)
-    if not zip_enabled:
-        return None
-
-    png_files = sorted(f for f in os.listdir(out_dir) if f.lower().endswith(".png"))
-    if not png_files:
-        if logger:
-            logger.log_text("[submission] No .png files found in output dir - skipping zip.")
-        return None
-
-    zip_name = cfg_get(cfg, "inference.output.zip_name", "submission.zip")
-    zip_path = os.path.join(os.path.dirname(out_dir.rstrip(os.sep)) or out_dir, zip_name)
-
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for fname in png_files:
-            zf.write(os.path.join(out_dir, fname), arcname=fname)
-
-    if logger:
-        logger.log_text(f"[submission] Zipped {len(png_files)} images into: {zip_path}")
-        logger.log_artifact("submission_zip", zip_path, note=f"{len(png_files)} images")
-    return zip_path
 
 
 def _save_video(frames, path, fps):
@@ -168,8 +132,5 @@ def _save_video(frames, path, fps):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")
-    parser.add_argument("--checkpoint", type=str, default=None,
-                         help="Override inference.checkpoint from the config (handy on "
-                              "Kaggle/Colab where the checkpoint path changes between runs).")
     args = parser.parse_args()
-    main(args.config, checkpoint_override=args.checkpoint)
+    main(args.config)
