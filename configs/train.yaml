@@ -100,7 +100,7 @@ densify:
   # tiết). Dùng chung ngưỡng với pruning.size.max_world_ratio bên dưới (prune
   # là lưới an toàn cuối, clamp này chủ động nắn liên tục giữa các lần
   # densify). Để null/0 để tắt.
-  max_scale_ratio: 0.06
+  max_scale_ratio: 0.02
 
 # ==========================================================
 # Gaussian Pruning
@@ -118,7 +118,7 @@ pruning:
 
     max_screen: 20
 
-    max_world_ratio: 0.06
+    max_world_ratio: 0.03
 
   # Trần khoảng cách (tính theo bội số bán kính scene đã normalize) từ tâm
   # scene - nhắm vào artifact "Background collapse"/"Floating Gaussian"
@@ -137,7 +137,7 @@ pruning:
   # theo dõi log dòng "[prune WARNING]"/"[prune breakdown]" khi train để
   # biết % Gaussian bị tiêu chí này đánh dấu; nếu vẫn thấy > 20-30% dù đã
   # nới, cân nhắc set null để tắt hẳn thay vì dò tiếp.
-  max_distance_from_center: 6.0
+  max_distance_from_center: 10.0
 
   # Trần an toàn tuyệt đối: KHÔNG BAO GIỜ để 1 lần prune xoá xuống dưới mức
   # này (xem _prune_points() trong trainer.py) - phòng trường hợp 1 tiêu chí
