@@ -137,7 +137,7 @@ pruning:
   # theo dõi log dòng "[prune WARNING]"/"[prune breakdown]" khi train để
   # biết % Gaussian bị tiêu chí này đánh dấu; nếu vẫn thấy > 20-30% dù đã
   # nới, cân nhắc set null để tắt hẳn thay vì dò tiếp.
-  max_distance_from_center: 10.0
+  max_distance_from_center: 7.0
 
   # Trần an toàn tuyệt đối: KHÔNG BAO GIỜ để 1 lần prune xoá xuống dưới mức
   # này (xem _prune_points() trong trainer.py) - phòng trường hợp 1 tiêu chí
