@@ -100,7 +100,7 @@ densify:
   # tiết). Dùng chung ngưỡng với pruning.size.max_world_ratio bên dưới (prune
   # là lưới an toàn cuối, clamp này chủ động nắn liên tục giữa các lần
   # densify). Để null/0 để tắt.
-  max_scale_ratio: 0.02
+  max_scale_ratio: 0.06
 
 # ==========================================================
 # Gaussian Pruning
@@ -118,7 +118,7 @@ pruning:
 
     max_screen: 20
 
-    max_world_ratio: 0.03
+    max_world_ratio: 0.06
 
   # Trần khoảng cách (tính theo bội số bán kính scene đã normalize) từ tâm
   # scene - nhắm vào artifact "Background collapse"/"Floating Gaussian"
