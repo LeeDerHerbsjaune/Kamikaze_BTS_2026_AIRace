@@ -506,9 +506,18 @@ class BTSDataset:
                 C = _camera_center(R, T)
                 C_norm = (C - self._norm_center) * self._norm_scale
                 T = -R @ C_norm
+            # Strip any extension already present in the source name (CSV
+            # image_name columns commonly carry the original ".JPG"/".jpg"
+            # extension straight through) - cam.image_name is later reused
+            # as the OUTPUT filename stem in render_novel_views.py, which
+            # appends its own extension. Without stripping here first, the
+            # two concatenate into a double extension like
+            # "DJI_..._V.JPG.png" instead of a clean "DJI_..._V.jpg".
+            raw_name = t.get("name", f"target_{i:03d}")
+            name = os.path.splitext(raw_name)[0] if isinstance(raw_name, str) else raw_name
             cam = Camera(uid=f"target_{i}", R=R, T=T,
                          FoVx=t["FoVx"], FoVy=t["FoVy"],
-                         image=None, image_name=t.get("name", f"target_{i:03d}"),
+                         image=None, image_name=name,
                          width=t["width"], height=t["height"],
                          device=self.device)
             self.target_cameras.append(cam)

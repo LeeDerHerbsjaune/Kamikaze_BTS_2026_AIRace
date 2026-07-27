@@ -9,9 +9,24 @@ inference:
   output:
     directory: "./outputs/bts_scene_01/novel_views"
 
+    # Zips every rendered image into a single archive (placed next to
+    # `directory`, i.e. one level up) right after rendering - ready to
+    # upload as-is. Off by default so existing behavior is unchanged.
+    zip: true
+    zip_name: "submission.zip"
+
   render:
 
     images: true
+
+    # Output image format for each rendered novel view - "jpg" (default,
+    # matches the original .JPG test images / expected submission naming)
+    # or "png" (lossless, larger files). cam.image_name already has any
+    # original extension stripped when loaded (see _load_target_views in
+    # dataloader/bts_dataset.py), so this setting is what actually decides
+    # the saved file's extension - it doesn't just rename an existing file.
+    format: "jpg"
+    jpeg_quality: 95
 
     video:
       enabled: true
